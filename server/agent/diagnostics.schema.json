@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Diagnostic event",
+  "description": "Structured diagnostic event emitted over /ws and tee'd into agent/diagnostics/.",
+  "type": "object",
+  "required": ["code", "severity", "crate", "message"],
+  "properties": {
+    "code": {
+      "type": "string",
+      "description": "Stable error code, e.g. E_OANDA_AUTH, E_PARSE_PRICE, W_FEATURE_NAN.",
+      "pattern": "^[EWI]_[A-Z0-9_]+$"
+    },
+    "severity": {
+      "type": "string",
+      "enum": ["info", "warn", "error", "fatal"]
+    },
+    "crate": {
+      "type": "string",
+      "description": "Workspace crate that emitted the diagnostic."
+    },
+    "message": {
+      "type": "string"
+    },
+    "fields": {
+      "type": "object",
+      "description": "Structured key-value fields (instrument, order_id, etc.)."
+    },
+    "raw_log_path": {
+      "type": ["string", "null"],
+      "description": "Optional path to raw log for failure-first reproduction."
+    },
+    "raw_log_sha256": {
+      "type": ["string", "null"]
+    },
+    "ts": {
+      "type": "string",
+      "format": "date-time"
+    }
+  }
+}

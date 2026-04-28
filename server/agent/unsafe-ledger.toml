@@ -1,0 +1,11 @@
+# Every `unsafe` block in the workspace must have an entry here.
+# As of M1: zero unsafe blocks.
+# Format:
+# [[entry]]
+# crate = "..."
+# file = "..."
+# line = 0
+# safety_invariant = "..."
+# reviewer = "..."
+
+# (intentionally empty)

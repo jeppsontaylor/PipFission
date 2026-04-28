@@ -1,0 +1,108 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/market-domain",
+    "crates/oanda-adapter",
+    "crates/alpaca-adapter",
+    "crates/portfolio",
+    "crates/feature-engine",
+    "crates/strategy",
+    "crates/persistence",
+    "crates/api-server",
+    "crates/bar-aggregator",
+    "crates/labeling",
+    "crates/cv",
+    "crates/metrics",
+    "crates/trader",
+    "crates/backtest",
+    "crates/inference",
+    "crates/bar-features",
+    "crates/live-inference",
+    "crates/live-trader",
+]
+default-members = ["crates/api-server"]
+
+[workspace.package]
+version = "1.0.1"
+edition = "2021"
+rust-version = "1.85"
+license = "Proprietary"
+publish = false
+
+[workspace.dependencies]
+# Async runtime + web
+tokio = { version = "1.40", features = ["full"] }
+axum = { version = "0.7", features = ["ws"] }
+tower-http = { version = "0.6", features = ["cors"] }
+futures-util = "0.3"
+
+# HTTP client (oanda-adapter only)
+reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls", "gzip"] }
+bytes = "1"
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Time
+chrono = { version = "0.4", features = ["serde"] }
+
+# Error handling + diagnostics
+anyhow = "1"
+thiserror = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# State + concurrency primitives
+dashmap = "6"
+parking_lot = "0.12"
+
+# Workspace-internal crates
+market-domain = { path = "crates/market-domain" }
+oanda-adapter = { path = "crates/oanda-adapter" }
+alpaca-adapter = { path = "crates/alpaca-adapter" }
+portfolio = { path = "crates/portfolio" }
+feature-engine = { path = "crates/feature-engine" }
+strategy = { path = "crates/strategy" }
+persistence = { path = "crates/persistence" }
+bar-aggregator = { path = "crates/bar-aggregator" }
+labeling = { path = "crates/labeling" }
+cv = { path = "crates/cv" }
+metrics = { path = "crates/metrics" }
+trader = { path = "crates/trader" }
+backtest = { path = "crates/backtest" }
+inference = { path = "crates/inference" }
+bar-features = { path = "crates/bar-features" }
+live-inference = { path = "crates/live-inference" }
+live-trader = { path = "crates/live-trader" }
+
+# Config / env
+dotenvy = "0.15"
+
+# Test deps
+proptest = "1"
+tempfile = "3"
+
+# Misc
+rand = { version = "0.8", features = ["small_rng"] }
+async-trait = "0.1"
+arc-swap = "1.7"
+tokio-tungstenite = { version = "0.24", default-features = false, features = ["connect", "rustls-tls-webpki-roots"] }
+
+# Embedded DuckDB for the persistence crate. `bundled` ships its own
+# DuckDB so we don't depend on a system library. Timestamps are stored as
+# BIGINT (ms-since-epoch) to keep the binding simple — no chrono feature
+# needed; the writer converts at the boundary.
+duckdb = { version = "1.1", features = ["bundled"] }
+
+# ONNX Runtime bindings for the live inference path. `download-binaries`
+# pulls a prebuilt ORT shared lib (no system install required); `ndarray`
+# integrates with the rest of the inference crate's array math.
+ort = { version = "=2.0.0-rc.10", features = ["download-binaries", "ndarray"] }
+ndarray = "0.16"
+notify = "6"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1

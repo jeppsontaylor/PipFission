@@ -1,0 +1,45 @@
+[package]
+name = "api-server"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "axum HTTP + WebSocket orchestrator. Wires OANDA streams into AppState and fans out to the dashboard."
+
+[[bin]]
+name = "api-server"
+path = "src/main.rs"
+
+[dependencies]
+market-domain = { workspace = true }
+oanda-adapter = { workspace = true }
+alpaca-adapter = { workspace = true }
+portfolio = { workspace = true }
+feature-engine = { workspace = true }
+strategy = { workspace = true }
+persistence = { workspace = true }
+bar-aggregator = { workspace = true }
+inference = { workspace = true }
+live-inference = { workspace = true }
+live-trader = { workspace = true }
+arc-swap = { workspace = true }
+async-trait = { workspace = true }
+
+tokio = { workspace = true }
+axum = { workspace = true }
+tower-http = { workspace = true }
+futures-util = { workspace = true }
+
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+dashmap = { workspace = true }
+parking_lot = { workspace = true }
+
+dotenvy = { workspace = true }

@@ -1,0 +1,2 @@
+[console_scripts]
+research = research.cli.__main__:app

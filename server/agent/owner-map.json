@@ -1,0 +1,53 @@
+{
+  "schema_version": 1,
+  "generated_at": null,
+  "crates": {
+    "market-domain": {
+      "owns": [
+        "PriceTick", "AccountSnapshot", "TransactionEvent", "EstimateTick",
+        "Snapshot", "ConnStatus", "StreamHealth", "History", "HistoryPoint",
+        "Instrument", "AccountId", "OrderId", "TransactionId",
+        "Config"
+      ],
+      "no_io": true
+    },
+    "oanda-adapter": {
+      "owns": [
+        "Client", "ByteStream", "Backoff",
+        "streams::pricing", "streams::transactions", "streams::account_poll"
+      ],
+      "io": ["reqwest", "tokio::net"]
+    },
+    "portfolio": {
+      "owns": [
+        "PaperBook", "Position", "Ledger",
+        "OrderRouter", "PaperRouter",
+        "Reconciliation", "estimator::spawn"
+      ],
+      "no_io": true
+    },
+    "feature-engine": {
+      "owns": ["IncrementalFeatures", "FeatureVector", "indicators::*"],
+      "no_io": true,
+      "status": "placeholder until M3"
+    },
+    "strategy": {
+      "owns": ["OnlineLogReg", "WalkForward", "SignalEmitter", "IntentEmitter"],
+      "no_io": true,
+      "status": "placeholder until M4"
+    },
+    "persistence": {
+      "owns": ["TickWriter", "ModelSnapshotStore", "Hydrate"],
+      "io": ["sqlx-sqlite"],
+      "status": "placeholder until M2"
+    },
+    "api-server": {
+      "owns": [
+        "AppState", "Event", "Snapshot wiring",
+        "ws::ws_handler", "http::healthz", "http::current_state", "http::instruments",
+        "main"
+      ],
+      "io": ["axum", "network"]
+    }
+  }
+}

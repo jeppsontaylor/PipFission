@@ -1,0 +1,6 @@
+Metadata-Version: 2.4
+Name: research
+Version: 0.1.0
+Summary: Spicy Penguin research layer: extract → label → train → fine-tune trader → lockbox → ONNX export.
+Author: VEOX Inc. Research Group
+Requires-Python: >=3.11

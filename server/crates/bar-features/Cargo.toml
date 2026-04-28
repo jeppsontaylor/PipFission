@@ -1,0 +1,24 @@
+[package]
+name = "bar-features"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "O(N) bar-level 24-dim feature recompute, byte-aligned with Python research/features.py. Powers live ONNX inference at bar close."
+
+[dependencies]
+market-domain = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
+
+# CLI shim used by `research/tests/test_features.py` to verify Rust
+# and Python feature implementations agree byte-for-byte. Reads a
+# JSON array of bars from stdin, writes the 24-dim feature vector
+# for the LAST bar to stdout. Not used in production.
+[[bin]]
+name = "bar_features_dump"
+path = "src/bin/bar_features_dump.rs"

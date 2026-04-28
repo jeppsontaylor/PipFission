@@ -1,0 +1,6 @@
+pyproject.toml
+src/research.egg-info/PKG-INFO
+src/research.egg-info/SOURCES.txt
+src/research.egg-info/dependency_links.txt
+src/research.egg-info/entry_points.txt
+src/research.egg-info/top_level.txt

@@ -1,0 +1,25 @@
+[package]
+name = "inference"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Live ONNX inference + hot-swap. Loads the champion ONNX produced by the research layer; falls back to strategy::OnlineLogReg on any error."
+
+[dependencies]
+market-domain = { workspace = true }
+strategy = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tokio = { workspace = true }
+parking_lot = { workspace = true }
+arc-swap = { workspace = true }
+ort = { workspace = true }
+ndarray = { workspace = true }
+notify = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }

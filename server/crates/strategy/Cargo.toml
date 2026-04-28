@@ -1,0 +1,17 @@
+[package]
+name = "strategy"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Online multinomial logistic regression + walk-forward fitness + signal/intent emission. Sprint 2 milestone M4 (signals) and M5 (intents)."
+
+[dependencies]
+market-domain = { workspace = true }
+feature-engine = { workspace = true }
+serde = { workspace = true }
+chrono = { workspace = true }
+tokio = { workspace = true }
+parking_lot = { workspace = true }
+tracing = { workspace = true }

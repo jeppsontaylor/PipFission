@@ -1,0 +1,17 @@
+[package]
+name = "bar-aggregator"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Tick → 10-second OHLCV bar aggregator. Subscribes to Event::Price, emits Event::Bar10s on bar close."
+
+[dependencies]
+market-domain = { workspace = true }
+serde = { workspace = true }
+chrono = { workspace = true }
+tokio = { workspace = true }
+parking_lot = { workspace = true }
+dashmap = { workspace = true }
+tracing = { workspace = true }

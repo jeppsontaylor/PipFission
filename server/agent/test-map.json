@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "tests": {
+    "Instrument::try_new":         "crates/market-domain/src/ids.rs (#[cfg(test)] mod tests)",
+    "Units arithmetic":            "crates/market-domain/src/ids.rs (#[cfg(test)] mod tests)",
+    "PaperBook::apply_oanda_fill": "crates/portfolio/src/paper_book.rs (#[cfg(test)] mod tests + proptest)",
+    "PaperBook invariant (cash + Σ units*mid == equity)": "crates/portfolio/tests/invariant.rs (proptest)",
+    "Pricing parser parse_price":  "crates/oanda-adapter/src/streams/pricing.rs (#[cfg(test)] mod tests)",
+    "Transactions parser":         "crates/oanda-adapter/src/streams/transactions.rs (#[cfg(test)] mod tests)",
+    "Account summary parser":      "crates/oanda-adapter/src/streams/account_poll.rs (#[cfg(test)] mod tests)",
+    "WS hello payload shape":      "crates/api-server/tests/ws_hello.rs (planned)"
+  }
+}

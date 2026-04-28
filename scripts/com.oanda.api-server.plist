@@ -1,0 +1,77 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+  <dict>
+    <key>Label</key>
+    <string>com.oanda.api-server</string>
+
+    <!-- Path to the release binary. Update on a fresh clone if the
+         repo lives somewhere else. -->
+    <key>ProgramArguments</key>
+    <array>
+      <string>/Users/bentaylor/Code/oanda/server/target/release/api-server</string>
+    </array>
+
+    <!-- Working directory matters: api-server resolves DATABASE_PATH,
+         RESEARCH_ARCHIVE_DIR, and the .venv used by the Python
+         pipeline runner relative to the cwd. -->
+    <key>WorkingDirectory</key>
+    <string>/Users/bentaylor/Code/oanda</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+      <key>DATABASE_PATH</key>
+      <string>./data/oanda.duckdb</string>
+
+      <!-- Paper trading + auto-retrain on. CHAMPION_ROUTING_ENABLED
+           and ALLOW_OANDA_ROUTING stay UNSET → no real OANDA orders. -->
+      <key>LIVE_TRADER_ENABLED</key>
+      <string>true</string>
+      <key>PIPELINE_TRIGGER_ENABLED</key>
+      <string>true</string>
+      <key>AUTO_RETRAIN_ENABLED</key>
+      <string>true</string>
+      <key>AUTO_RETRAIN_BARS_THRESHOLD</key>
+      <string>100</string>
+      <key>AUTO_RETRAIN_INSTRUMENTS</key>
+      <string>EUR_USD,USD_JPY,GBP_USD</string>
+
+      <!-- Pre-sweep parquet archive of time-series tables. -->
+      <key>RESEARCH_ARCHIVE_DIR</key>
+      <string>./data/archive</string>
+
+      <!-- launchd doesn't inherit shell PATH; tools the python
+           subprocess invokes (lgbm, xgboost native libs) need
+           Homebrew paths in scope. -->
+      <key>PATH</key>
+      <string>/Users/bentaylor/Code/oanda/.venv/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+    </dict>
+
+    <!-- Survive crashes: launchd restarts the process within a few
+         seconds. Combined with the schema migrations applied at
+         every startup, this means an operational panic doesn't
+         lose data — the process bounces and resumes. -->
+    <key>KeepAlive</key>
+    <true/>
+
+    <!-- Start at login. -->
+    <key>RunAtLoad</key>
+    <true/>
+
+    <!-- Stdout / stderr → log files the operator can tail. -->
+    <key>StandardOutPath</key>
+    <string>/Users/bentaylor/Code/oanda/data/logs/server/api-server.launchd.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/bentaylor/Code/oanda/data/logs/server/api-server.launchd.err.log</string>
+
+    <!-- Don't burn battery — process is mostly idle between bars. -->
+    <key>ProcessType</key>
+    <string>Background</string>
+
+    <!-- Throttle restarts so a crash loop doesn't spin the laptop's
+         fans. 10s between attempts is the launchd default minimum. -->
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
+  </dict>
+</plist>

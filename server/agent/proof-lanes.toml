@@ -1,0 +1,31 @@
+# Maps each just lane to the workspace surface it covers.
+# Used by future cargo-mss-style tooling; for now, documentation only.
+
+[fast]
+target_seconds = 120
+tools = ["cargo fmt --check", "cargo clippy -D warnings", "cargo nextest run"]
+crates = ["market-domain", "portfolio"]
+
+[medium]
+target_seconds = 600
+tools = ["fast", "cargo nextest run --workspace", "cargo test --doc"]
+crates = ["*"]
+
+[deep]
+target_seconds = "trigger-only"
+tools = ["nextest --test-threads=1", "proptest-deep features"]
+crates = ["portfolio", "feature-engine", "strategy"]
+
+[security]
+target_seconds = "trigger-only"
+tools = ["cargo deny", "cargo audit"]
+triggers = [
+  "oanda-adapter/**",
+  "api-server/src/commands.rs",
+  "any change to .env reading or URL construction",
+  "any new dependency",
+]
+
+[release]
+target_seconds = "ship-only"
+tools = ["cargo build --release --timings"]

@@ -1,0 +1,63 @@
+set shell := ["bash", "-uc"]
+set dotenv-load := false
+
+# Default: list available recipes
+default:
+    @just --list
+
+# === Proof lanes ===
+
+# Fast lane: target <2 min. Run on every change.
+fast:
+    cargo fmt --all -- --check
+    cargo clippy --workspace --all-targets -- -D warnings
+    cargo nextest run -p market-domain -p portfolio --no-fail-fast
+
+# Medium lane: target <10 min. Run on PR / before handoff.
+medium: fast
+    cargo nextest run --workspace
+    cargo test --workspace --doc
+
+# Deep lane: trigger only.
+deep:
+    cargo nextest run --workspace -- --test-threads=1
+    cargo test -p portfolio --features proptest-deep || true
+
+# Security lane: trigger only.
+security:
+    cargo deny check 2>/dev/null || echo "cargo-deny not installed; install via: cargo install cargo-deny --locked"
+    cargo audit 2>/dev/null || echo "cargo-audit not installed; install via: cargo install cargo-audit --locked"
+
+# Release lane: ship gate.
+release:
+    cargo build --release --workspace --timings
+
+# Diagnostics: tee structured output to agent/diagnostics/<ts>/
+diagnostics:
+    @ts=$(date +%Y%m%d_%H%M%S); \
+    out="agent/diagnostics/$ts"; \
+    mkdir -p "$out"; \
+    cargo clippy --workspace --message-format=json > "$out/clippy.json" 2>&1 || true; \
+    cargo nextest run --workspace --message-format libtest-json > "$out/tests.json" 2>&1 || true; \
+    echo "Diagnostics written to $out"
+
+# === Run / dev ===
+
+# Run the live server (loads .env from repo root or server/).
+dev:
+    cargo run -p api-server
+
+# Run the dashboard's vite dev server.
+dashboard-dev:
+    cd ../dashboard && npm run dev
+
+# Build everything in release mode.
+build:
+    cargo build --release --workspace
+
+# === Misc ===
+
+# Check the workspace dependency graph for cycles.
+check-graph:
+    cargo metadata --no-deps --format-version 1 > /dev/null
+    @echo "Workspace metadata OK"
