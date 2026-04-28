@@ -1,0 +1,2 @@
+{"kind":"onnx","n_features":24,"new_model_id":"side_lgbm_1777266560_9df229","ts_ms":1777357980746,"v":"v1.0.1"}
+{"v":"v1.0.1","ts_ms":1777358011957,"old_model_id":null,"new_model_id":"side_lgbm_1777266560_9df229","kind":"onnx","sha256":"0000000000000000000000000000000000000000000000000000000000000000","n_features":24,"_example":true}

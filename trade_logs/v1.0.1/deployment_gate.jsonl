@@ -1,0 +1,1 @@
+{"v":"v1.0.1","ts_ms":1777358011957,"instrument":"EUR_USD","model_id":"side_lgbm_example","passed":true,"blocked":[],"thresholds":{"min_oos_auc":0.55,"max_oos_log_loss":0.7,"min_oos_balanced_acc":0.52,"min_fine_tune_sortino":0.3,"max_fine_tune_dd_bp":1500.0},"_example":true}
