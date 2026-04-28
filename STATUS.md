@@ -72,20 +72,23 @@ recipes. The recommended review order is at the top of that file.
 
 ## What's still broken (for the next agent)
 
-1. **Auto-retrain still fails on the DB lock**. The manual fix
-   (stop server → run pipeline → restart) works but the in-process
-   auto-retrain orchestrator fires Python subprocesses while the
-   api-server is still holding the lock. Three options ranked by
-   correctness:
-   - **A**: api-server gains a `POST /api/admin/db/handoff/start`
-     endpoint that drops the live `Connection`, waits for Python to
-     finish, reopens. ~50 LOC in api-server, plus pipeline driver
-     calls before/after the run.
-   - **B**: Periodic snapshot → `data/oanda.duckdb.ro` every 5 min,
-     research code reads from snapshot. Doesn't solve research
-     writes (labels, oof_predictions, model_metrics, etc).
-   - **C**: Move research DB to its own file, sync it from the live
-     DB via Rust. Most invasive.
+1. **~~Auto-retrain still fails on the DB lock~~** — **FIXED** with
+   the supervisor pattern. `scripts/api-server-supervisor.sh` runs
+   `api-server` in a loop. When auto-retrain fires inside the
+   api-server, it writes `data/.retrain-pending` and exits with
+   code 75. The supervisor sees the exit code, drains the sentinel,
+   runs the Python pipeline (which can now acquire the DB write
+   lock the api-server held), then restarts the api-server. The
+   hot-swap watcher picks up the new ONNX on the next boot. The
+   `AUTO_RETRAIN_VIA_SENTINEL=true` env var is wired through
+   `auto_retrain.rs::attempt_fire`. Verified end-to-end: synthetic
+   exit-75 with sentinel → drain logic fires → restart loops.
+   
+   **Operational change**: launch the api-server via
+   `./scripts/api-server-supervisor.sh` (NOT `nohup
+   ./server/target/release/api-server` directly). The supervisor
+   sets up the env, owns the auto-retrain handoff, and survives
+   crashes.
 2. **Models are below random** (oos_auc ~0.46 across all three
    instruments). Likely root cause: only 98–116 labels per
    instrument because we only have ~2000 bars of live data. Fix:

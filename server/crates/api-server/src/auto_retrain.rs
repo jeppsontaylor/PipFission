@@ -281,6 +281,52 @@ pub fn spawn(
 }
 
 async fn attempt_fire(state: &Arc<AppState>, auto: &Arc<AutoRetrain>, instrument: &str) {
+    // Sentinel mode: when AUTO_RETRAIN_VIA_SENTINEL=true, write the
+    // instrument to `data/.retrain-pending` and exit with code 75
+    // (EX_TEMPFAIL). The supervisor (`scripts/api-server-supervisor.sh`)
+    // sees the exit code, drains the sentinel, runs the Python pipeline
+    // (which can now acquire the DuckDB write lock the api-server held),
+    // then restarts the api-server. This is the permanent fix for the
+    // "auto-retrain never succeeds because of the DB lock" bug.
+    if std::env::var("AUTO_RETRAIN_VIA_SENTINEL").as_deref() == Ok("true") {
+        let sentinel = std::path::PathBuf::from("./data/.retrain-pending");
+        if let Some(parent) = sentinel.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let line = format!("{instrument}\n");
+        match std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&sentinel)
+        {
+            Ok(mut f) => {
+                use std::io::Write;
+                if let Err(e) = f.write_all(line.as_bytes()) {
+                    tracing::error!(error = %e, "auto-retrain: sentinel write failed");
+                    let err = PipelineSpawnError::SpawnFailed(format!("sentinel write: {e}"));
+                    auto.record_spawn_result(instrument, Err(&err));
+                    return;
+                }
+            }
+            Err(e) => {
+                tracing::error!(error = %e, "auto-retrain: sentinel open failed");
+                let err = PipelineSpawnError::SpawnFailed(format!("sentinel open: {e}"));
+                auto.record_spawn_result(instrument, Err(&err));
+                return;
+            }
+        }
+        tracing::info!(instrument, "auto-retrain: sentinel written, exiting for handoff");
+        // Schedule a clean exit on the next tick. The supervisor sees
+        // exit code 75 and triggers the python handoff.
+        tokio::spawn(async {
+            tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+            std::process::exit(75);
+        });
+        return;
+    }
+
+    // In-process mode (default off): spawn python directly. Will fail
+    // with DB lock conflict against the live api-server.
     let req = PipelineRunRequest {
         instrument: instrument.to_string(),
         n_bars: None,
@@ -289,8 +335,6 @@ async fn attempt_fire(state: &Arc<AppState>, auto: &Arc<AutoRetrain>, instrument
         seed: None,
     };
     let result = spawn_pipeline_subprocess(state, req).await;
-    // Log first (record_spawn_result is silent — it just touches counters
-    // + last_status_message), then update counters via the testable seam.
     match &result {
         Ok(resp) => {
             tracing::info!(
