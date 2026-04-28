@@ -19,6 +19,7 @@ members = [
     "crates/bar-features",
     "crates/live-inference",
     "crates/live-trader",
+    "crates/deploy-gate",
 ]
 default-members = ["crates/api-server"]
 
@@ -75,6 +76,7 @@ inference = { path = "crates/inference" }
 bar-features = { path = "crates/bar-features" }
 live-inference = { path = "crates/live-inference" }
 live-trader = { path = "crates/live-trader" }
+deploy-gate = { path = "crates/deploy-gate" }
 
 # Config / env
 dotenvy = "0.15"

@@ -8,12 +8,16 @@
 
 #![deny(unsafe_code)]
 
+pub mod bootstrap;
 pub mod deflated;
 pub mod drawdown;
+pub mod pbo;
 pub mod ratios;
 
+pub use bootstrap::{bootstrap_ci, bootstrap_mean_ci, bootstrap_sharpe_ci};
 pub use deflated::deflated_sharpe;
 pub use drawdown::{equity_drawdown, max_drawdown_bp};
+pub use pbo::probability_of_backtest_overfitting;
 pub use ratios::{calmar, hit_rate, profit_factor, sharpe, sortino};
 
 use serde::{Deserialize, Serialize};

@@ -467,6 +467,12 @@ fn on_champion_signal(
                 ) {
                     tracing::warn!(error = %e, "live-trader: trades.jsonl append failed");
                 }
+                // Refresh summary.json + LATEST.md so an agent
+                // browsing the repo always sees current per-ticker
+                // state.
+                if let Err(e) = update_ticker_summary(&signal.instrument) {
+                    tracing::debug!(error = %e, "live-trader: summary update failed");
+                }
             }
             emit_decision(
                 bus,
@@ -522,12 +528,149 @@ fn emit_decision(
         params_id: loaded.params_id.clone(),
         model_id: loaded.model_id.clone(),
     }));
-    // Mirror to the agent-readable JSONL preview. Failures are logged
-    // and swallowed — the JSONL is for review, not load-bearing.
-    if let Err(e) = write_decision_jsonl(instrument, ts_ms, action, reason, price, realized_r, loaded)
-    {
-        tracing::warn!(error = %e, "live-trader: decisions.jsonl append failed");
+    // Mirror to the agent-readable JSONL previews:
+    //   `actions.jsonl` — opens + closes only, full per-event record
+    //   `skip_summary.jsonl` — compacted runs of consecutive skips
+    // The split keeps signal-to-noise high so an agent reviewing the
+    // file can see the decisions that actually moved the trader.
+    let is_skip = action == "skip";
+    if !is_skip {
+        // First flush any accumulated skip-run for this ticker so the
+        // skip_summary appears immediately before the action that
+        // ended it.
+        if let Some(rec) = SKIP_ACCUMULATOR.flush(instrument, ts_ms, loaded) {
+            let _ = write_skip_summary_jsonl(&rec);
+        }
+        if let Err(e) = write_action_jsonl(
+            instrument, ts_ms, action, reason, price, realized_r, loaded,
+        ) {
+            tracing::warn!(error = %e, "live-trader: actions.jsonl append failed");
+        }
+    } else {
+        // Accumulate the skip; if the run is long enough flush a
+        // checkpoint summary so we don't carry state forever.
+        if let Some(rec) = SKIP_ACCUMULATOR.observe(instrument, ts_ms, reason, price, loaded) {
+            let _ = write_skip_summary_jsonl(&rec);
+        }
     }
+}
+
+/// Process-global skip accumulator. One `SkipRun` per ticker; each
+/// observed skip extends the run, each non-skip flushes it. Runs flush
+/// automatically every `SKIP_SUMMARY_FLUSH_AT` skips so we don't keep
+/// state indefinitely if the trader is permanently parked.
+const SKIP_SUMMARY_FLUSH_AT: u32 = 100;
+
+#[derive(Clone, Debug)]
+struct SkipRun {
+    instrument: String,
+    first_ts_ms: i64,
+    last_ts_ms: i64,
+    count: u32,
+    by_reason: std::collections::BTreeMap<String, u32>,
+    last_price: f64,
+    model_id: String,
+    params_id: String,
+}
+
+struct SkipAccumulator {
+    inner: parking_lot::Mutex<std::collections::HashMap<String, SkipRun>>,
+}
+
+impl SkipAccumulator {
+    fn new() -> Self {
+        Self {
+            inner: parking_lot::Mutex::new(std::collections::HashMap::new()),
+        }
+    }
+
+    /// Observe a new skip event. Returns `Some(SkipRun)` if the run
+    /// should be flushed (count just hit `SKIP_SUMMARY_FLUSH_AT`).
+    fn observe(
+        &self,
+        instrument: &str,
+        ts_ms: i64,
+        reason: &str,
+        price: f64,
+        loaded: &LoadedParams,
+    ) -> Option<SkipRun> {
+        let mut g = self.inner.lock();
+        let entry = g.entry(instrument.to_string()).or_insert_with(|| SkipRun {
+            instrument: instrument.to_string(),
+            first_ts_ms: ts_ms,
+            last_ts_ms: ts_ms,
+            count: 0,
+            by_reason: Default::default(),
+            last_price: price,
+            model_id: loaded.model_id.clone(),
+            params_id: loaded.params_id.clone(),
+        });
+        entry.last_ts_ms = ts_ms;
+        entry.count += 1;
+        *entry.by_reason.entry(reason.to_string()).or_insert(0) += 1;
+        entry.last_price = price;
+        entry.model_id = loaded.model_id.clone();
+        entry.params_id = loaded.params_id.clone();
+        if entry.count >= SKIP_SUMMARY_FLUSH_AT {
+            let snapshot = entry.clone();
+            g.remove(instrument);
+            Some(snapshot)
+        } else {
+            None
+        }
+    }
+
+    /// Flush whatever skip-run is currently accumulated for `instrument`.
+    fn flush(&self, instrument: &str, _now_ms: i64, _loaded: &LoadedParams) -> Option<SkipRun> {
+        self.inner.lock().remove(instrument)
+    }
+}
+
+static SKIP_ACCUMULATOR: std::sync::LazyLock<SkipAccumulator> =
+    std::sync::LazyLock::new(SkipAccumulator::new);
+
+#[allow(clippy::too_many_arguments)]
+fn write_action_jsonl(
+    instrument: &str,
+    ts_ms: i64,
+    action: &str,
+    reason: &str,
+    price: f64,
+    realized_r: Option<f64>,
+    loaded: &LoadedParams,
+) -> Result<()> {
+    use serde_json::json;
+    let record = json!({
+        "v": format!("v{RELEASE_VERSION}"),
+        "instrument": instrument,
+        "ts_ms": ts_ms,
+        "action": action,
+        "reason": reason,
+        "price": price,
+        "realized_r": realized_r,
+        "model_id": loaded.model_id,
+        "params_id": loaded.params_id,
+    });
+    let sub = ticker_sub_path(instrument, "actions.jsonl");
+    jsonl_log::append(&trade_logs_root(), RELEASE_VERSION, &sub, &record)
+}
+
+fn write_skip_summary_jsonl(run: &SkipRun) -> Result<()> {
+    use serde_json::json;
+    let record = json!({
+        "v": format!("v{RELEASE_VERSION}"),
+        "instrument": run.instrument,
+        "first_ts_ms": run.first_ts_ms,
+        "last_ts_ms": run.last_ts_ms,
+        "duration_ms": run.last_ts_ms - run.first_ts_ms,
+        "count": run.count,
+        "by_reason": &run.by_reason,
+        "last_price": run.last_price,
+        "model_id": run.model_id,
+        "params_id": run.params_id,
+    });
+    let sub = ticker_sub_path(&run.instrument, "skip_summary.jsonl");
+    jsonl_log::append(&trade_logs_root(), RELEASE_VERSION, &sub, &record)
 }
 
 /// Top-level dir into which `trade_logs/<v>/<ticker>/...jsonl` previews
@@ -622,31 +765,6 @@ fn write_trade_jsonl(
     jsonl_log::append(&trade_logs_root(), RELEASE_VERSION, &sub, &record)
 }
 
-fn write_decision_jsonl(
-    instrument: &str,
-    ts_ms: i64,
-    action: &str,
-    reason: &str,
-    price: f64,
-    realized_r: Option<f64>,
-    loaded: &LoadedParams,
-) -> Result<()> {
-    use serde_json::json;
-    let record = json!({
-        "v": format!("v{RELEASE_VERSION}"),
-        "instrument": instrument,
-        "ts_ms": ts_ms,
-        "action": action,
-        "reason": reason,
-        "price": price,
-        "realized_r": realized_r,
-        "model_id": loaded.model_id,
-        "params_id": loaded.params_id,
-    });
-    let sub = ticker_sub_path(instrument, "decisions.jsonl");
-    jsonl_log::append(&trade_logs_root(), RELEASE_VERSION, &sub, &record)
-}
-
 fn action_str(side: Side) -> &'static str {
     match side {
         Side::Long => "open_long",
@@ -738,6 +856,283 @@ fn build_decision_chain_json(entry: &str, exit_reason: &str) -> String {
 /// `LIVE_TRADER_SNAPSHOT_DIR` env at call time so tests + ops can
 /// override; defaults to `./data/trades` (relative to the api-server's
 /// working directory).
+/// Refresh the per-ticker `summary.json` and `LATEST.md` previews
+/// after any trade-affecting event (open captures the entry context;
+/// close commits the round-trip). Reads back from the just-written
+/// trades.jsonl + actions.jsonl + features.jsonl so the artifacts
+/// stay self-consistent.
+///
+/// Failures are logged + swallowed at the call site; this helper is
+/// for review-time observability, not load-bearing.
+fn update_ticker_summary(instrument: &str) -> Result<()> {
+    let root = trade_logs_root().join(version_folder(RELEASE_VERSION));
+    let safe = instrument.replace('/', "_");
+    let ticker_dir = root.join(&safe);
+    let trades_path = ticker_dir.join("trades.jsonl");
+    let actions_path = ticker_dir.join("actions.jsonl");
+    let features_path = ticker_dir.join("features.jsonl");
+
+    let trades = read_jsonl_lines(&trades_path).unwrap_or_default();
+    let actions = read_jsonl_lines(&actions_path).unwrap_or_default();
+    let features = read_jsonl_lines(&features_path).unwrap_or_default();
+
+    // Aggregate trade stats.
+    let n_trades = trades.len();
+    let mut wins = 0_usize;
+    let mut losses = 0_usize;
+    let mut cum_r = 0.0_f64;
+    let mut by_reason: std::collections::BTreeMap<String, u32> =
+        std::collections::BTreeMap::new();
+    let mut latest_trade_ts: Option<i64> = None;
+    for t in trades.iter() {
+        let r = t.get("realized_r").and_then(|v| v.as_f64()).unwrap_or(0.0);
+        cum_r += r;
+        if r > 0.0 {
+            wins += 1;
+        } else if r < 0.0 {
+            losses += 1;
+        }
+        if let Some(reason) = t.get("exit_reason").and_then(|v| v.as_str()) {
+            *by_reason.entry(reason.to_string()).or_insert(0) += 1;
+        }
+        if let Some(ts) = t.get("ts_out_ms").and_then(|v| v.as_i64()) {
+            latest_trade_ts = Some(latest_trade_ts.map_or(ts, |cur| cur.max(ts)));
+        }
+    }
+    let hit_rate = if (wins + losses) > 0 {
+        wins as f64 / (wins + losses) as f64
+    } else {
+        0.0
+    };
+    let latest_action = actions.last();
+    let latest_feature = features.last();
+    let model_id_now = latest_action
+        .and_then(|a| a.get("model_id").and_then(|v| v.as_str()))
+        .or_else(|| latest_feature.and_then(|f| f.get("model_id").and_then(|v| v.as_str())))
+        .unwrap_or("(unknown)")
+        .to_string();
+    let p_long_now = latest_feature.and_then(|f| f.get("p_long").and_then(|v| v.as_f64()));
+    let p_short_now =
+        latest_feature.and_then(|f| f.get("p_short").and_then(|v| v.as_f64()));
+    let close_now = latest_feature.and_then(|f| f.get("close").and_then(|v| v.as_f64()));
+    let last_action_str = latest_action
+        .and_then(|a| a.get("action").and_then(|v| v.as_str()))
+        .unwrap_or("(none)")
+        .to_string();
+
+    let summary = serde_json::json!({
+        "v": format!("v{RELEASE_VERSION}"),
+        "instrument": instrument,
+        "n_trades": n_trades,
+        "wins": wins,
+        "losses": losses,
+        "hit_rate": hit_rate,
+        "cum_r": cum_r,
+        "by_exit_reason": by_reason,
+        "latest_trade_ts_ms": latest_trade_ts,
+        "latest_action": last_action_str,
+        "latest_close": close_now,
+        "latest_p_long": p_long_now,
+        "latest_p_short": p_short_now,
+        "current_model_id": model_id_now,
+        "summary_updated_ms": chrono::Utc::now().timestamp_millis(),
+    });
+
+    // Atomic write: tmp + rename.
+    std::fs::create_dir_all(&ticker_dir)?;
+    let summary_path = ticker_dir.join("summary.json");
+    let summary_tmp = ticker_dir.join("summary.json.tmp");
+    std::fs::write(&summary_tmp, serde_json::to_string_pretty(&summary)?)?;
+    std::fs::rename(&summary_tmp, &summary_path)?;
+
+    // Render LATEST.md from the same buffers.
+    let latest_md = render_latest_md(instrument, &summary, &trades, &actions, &features);
+    let md_path = ticker_dir.join("LATEST.md");
+    let md_tmp = ticker_dir.join("LATEST.md.tmp");
+    std::fs::write(&md_tmp, latest_md)?;
+    std::fs::rename(&md_tmp, &md_path)?;
+    Ok(())
+}
+
+fn read_jsonl_lines(path: &std::path::Path) -> Result<Vec<serde_json::Value>> {
+    use std::io::{BufRead, BufReader};
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+    let f = std::fs::File::open(path)?;
+    let reader = BufReader::new(f);
+    let mut out = Vec::new();
+    for line in reader.lines().map_while(|r| r.ok()) {
+        if line.trim().is_empty() {
+            continue;
+        }
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) {
+            out.push(v);
+        }
+    }
+    Ok(out)
+}
+
+fn version_folder(v: &str) -> String {
+    if v.starts_with('v') {
+        v.to_string()
+    } else {
+        format!("v{v}")
+    }
+}
+
+fn render_latest_md(
+    instrument: &str,
+    summary: &serde_json::Value,
+    trades: &[serde_json::Value],
+    actions: &[serde_json::Value],
+    features: &[serde_json::Value],
+) -> String {
+    let mut buf = String::new();
+    buf.push_str(&format!("# {instrument} — latest\n\n"));
+    buf.push_str(&format!(
+        "_Auto-generated by live-trader at {}_\n\n",
+        chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ")
+    ));
+    buf.push_str("## At a glance\n\n");
+    buf.push_str(&format!(
+        "- **Trades closed**: {}\n",
+        summary.get("n_trades").and_then(|v| v.as_u64()).unwrap_or(0)
+    ));
+    buf.push_str(&format!(
+        "- **Wins / losses**: {} / {} (hit rate {:.1}%)\n",
+        summary.get("wins").and_then(|v| v.as_u64()).unwrap_or(0),
+        summary.get("losses").and_then(|v| v.as_u64()).unwrap_or(0),
+        100.0 * summary.get("hit_rate").and_then(|v| v.as_f64()).unwrap_or(0.0),
+    ));
+    buf.push_str(&format!(
+        "- **Cumulative realised R**: {:+.6}\n",
+        summary.get("cum_r").and_then(|v| v.as_f64()).unwrap_or(0.0)
+    ));
+    buf.push_str(&format!(
+        "- **Current champion**: `{}`\n",
+        summary
+            .get("current_model_id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("(none)")
+    ));
+    if let (Some(pl), Some(ps)) = (
+        summary.get("latest_p_long").and_then(|v| v.as_f64()),
+        summary.get("latest_p_short").and_then(|v| v.as_f64()),
+    ) {
+        buf.push_str(&format!(
+            "- **Latest probs**: p_long={:.4}, p_short={:.4}\n",
+            pl, ps
+        ));
+    }
+    buf.push_str(&format!(
+        "- **Latest action**: `{}`\n\n",
+        summary
+            .get("latest_action")
+            .and_then(|v| v.as_str())
+            .unwrap_or("(none)")
+    ));
+
+    // Last 5 trades pretty-printed.
+    buf.push_str("## Last 5 closed trades\n\n");
+    if trades.is_empty() {
+        buf.push_str("_No trades yet._\n\n");
+    } else {
+        buf.push_str(
+            "| ts_out (UTC) | side | entry | exit | realized_r | reason | model |\n",
+        );
+        buf.push_str(
+            "| --- | --- | --- | --- | --- | --- | --- |\n",
+        );
+        let n = trades.len();
+        for t in trades.iter().skip(n.saturating_sub(5)) {
+            let ts = t.get("ts_out_ms").and_then(|v| v.as_i64()).unwrap_or(0);
+            let side = t.get("side").and_then(|v| v.as_i64()).unwrap_or(0);
+            let entry = t.get("entry_px").and_then(|v| v.as_f64()).unwrap_or(0.0);
+            let exit = t.get("exit_px").and_then(|v| v.as_f64()).unwrap_or(0.0);
+            let r = t.get("realized_r").and_then(|v| v.as_f64()).unwrap_or(0.0);
+            let reason = t
+                .get("exit_reason")
+                .and_then(|v| v.as_str())
+                .unwrap_or("?");
+            let model = t
+                .get("model_kind")
+                .and_then(|v| v.as_str())
+                .unwrap_or("?");
+            let when = chrono::DateTime::<chrono::Utc>::from_timestamp_millis(ts)
+                .map(|d| d.format("%H:%M:%S").to_string())
+                .unwrap_or_else(|| ts.to_string());
+            let side_str = match side {
+                1 => "long",
+                -1 => "short",
+                _ => "?",
+            };
+            buf.push_str(&format!(
+                "| {when} | {side_str} | {entry:.5} | {exit:.5} | {r:+.6} | {reason} | {model} |\n",
+            ));
+        }
+        buf.push('\n');
+    }
+
+    // Last 5 actions.
+    buf.push_str("## Last 5 actions (open / close)\n\n");
+    if actions.is_empty() {
+        buf.push_str("_No actions yet._\n\n");
+    } else {
+        buf.push_str("| ts (UTC) | action | reason | price | realized_r |\n");
+        buf.push_str("| --- | --- | --- | --- | --- |\n");
+        let n = actions.len();
+        for a in actions.iter().skip(n.saturating_sub(5)) {
+            let ts = a.get("ts_ms").and_then(|v| v.as_i64()).unwrap_or(0);
+            let action = a.get("action").and_then(|v| v.as_str()).unwrap_or("?");
+            let reason = a.get("reason").and_then(|v| v.as_str()).unwrap_or("?");
+            let price = a.get("price").and_then(|v| v.as_f64()).unwrap_or(0.0);
+            let r = a
+                .get("realized_r")
+                .and_then(|v| v.as_f64())
+                .map(|x| format!("{x:+.6}"))
+                .unwrap_or_else(|| "—".to_string());
+            let when = chrono::DateTime::<chrono::Utc>::from_timestamp_millis(ts)
+                .map(|d| d.format("%H:%M:%S").to_string())
+                .unwrap_or_else(|| ts.to_string());
+            buf.push_str(&format!("| {when} | {action} | {reason} | {price:.5} | {r} |\n"));
+        }
+        buf.push('\n');
+    }
+
+    // Last 10 features summary (close + p_long).
+    buf.push_str("## Last 10 feature snapshots\n\n");
+    if features.is_empty() {
+        buf.push_str("_No features yet._\n\n");
+    } else {
+        buf.push_str("| ts (UTC) | close | spread_bp | p_long | p_short | calibrated |\n");
+        buf.push_str("| --- | --- | --- | --- | --- | --- |\n");
+        let n = features.len();
+        for f in features.iter().skip(n.saturating_sub(10)) {
+            let ts = f.get("ts_ms").and_then(|v| v.as_i64()).unwrap_or(0);
+            let close = f.get("close").and_then(|v| v.as_f64()).unwrap_or(0.0);
+            let spread = f
+                .get("spread_bp_avg")
+                .and_then(|v| v.as_f64())
+                .unwrap_or(0.0);
+            let p_long = f.get("p_long").and_then(|v| v.as_f64()).unwrap_or(0.0);
+            let p_short = f.get("p_short").and_then(|v| v.as_f64()).unwrap_or(0.0);
+            let cal = f.get("calibrated").and_then(|v| v.as_f64()).unwrap_or(0.0);
+            let when = chrono::DateTime::<chrono::Utc>::from_timestamp_millis(ts)
+                .map(|d| d.format("%H:%M:%S").to_string())
+                .unwrap_or_else(|| ts.to_string());
+            buf.push_str(&format!(
+                "| {when} | {close:.5} | {spread:.2} | {p_long:.4} | {p_short:.4} | {cal:.4} |\n"
+            ));
+        }
+        buf.push('\n');
+    }
+
+    buf.push_str("---\n\n");
+    buf.push_str("_See `summary.json` for the full at-a-glance object, or `trades.jsonl` / `features.jsonl` / `actions.jsonl` for full per-event records._\n");
+    buf
+}
+
 fn snapshots_root() -> PathBuf {
     std::env::var("LIVE_TRADER_SNAPSHOT_DIR")
         .map(PathBuf::from)

@@ -1,0 +1,16 @@
+[package]
+name = "deploy-gate"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Deployment quality gate. Evaluates a would-be champion against performance floors (OOS AUC, log loss, balanced accuracy, fine-tune Sortino + DD, lockbox pass) and persists the decision to model_deployment_gate. Pure-logic Rust port of research/deployment/gate.py."
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+anyhow = { workspace = true }
+duckdb = { workspace = true }
+persistence = { workspace = true }
