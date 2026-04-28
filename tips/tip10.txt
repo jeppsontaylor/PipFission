@@ -1,0 +1,464 @@
+Here is the version I would build.
+
+The core idea is good: generate high-quality hindsight labels, train a classifier to predict them, create out-of-fold confidence scores, then tune a trader on those out-of-fold scores. The dangerous part is that every one of those steps can overfit. So the upgraded system should optimize **out-of-sample Sortino/Sharpe under purged, embargoed, nested validation**, not raw in-sample Sharpe.
+
+This is not financial advice or a profitability guarantee. The goal is to build a research/deployment system that makes false positives much harder.
+
+## 1. Main design change
+
+I would **not** use ordinary random k-folding. Use **purged / embargoed time-series cross-validation**, and ideally **Combinatorial Purged Cross-Validation** for research. In financial ML, labels often depend on future intervals, so normal k-fold can leak information from overlapping label windows. The MLFinLab CPCV implementation explicitly purges training observations that overlap test-label intervals, and de Prado’s framework includes purging and embargo as finance-specific cross-validation tools. Recent work comparing out-of-sample testing methods also finds CPCV stronger than ordinary K-Fold, Purged K-Fold, and Walk-Forward for reducing backtest-overfitting risk in their synthetic controlled setting. ([GitHub][1])
+
+So the pipeline becomes:
+
+1. Reserve the final **100 points** as a true untouched production simulation.
+2. Use the first **1,000 points** for research only.
+3. Inside those 1,000 points, run nested purged/CPCV validation.
+4. Generate out-of-fold classifier confidences for every usable training point.
+5. Tune trader rules only on those out-of-fold confidences.
+6. Train the final classifier on the first 1,000 points.
+7. Run the trained classifier + tuned trader sequentially on points 1,001–1,100.
+8. Report both classifier metrics and trading metrics on the 100-point holdout.
+
+I cannot honestly report a numeric out-of-sample accuracy without the actual 1,100 points and features. The system should report it automatically as part of the final research run.
+
+## 2. Labels: use an oracle, but constrain it hard
+
+Your “best possible buy/sell labels” idea is useful, but it needs regularization. An unconstrained oracle will learn noise. I would generate labels from **two competing labelers** and let the research system choose which one produces the best downstream out-of-fold trader performance.
+
+### Labeler A: triple-barrier / meta-labeling labeler
+
+This is the more conservative baseline. Use volatility-scaled profit-taking, stop-loss, and vertical time barriers. This gives labels such as:
+
+```text
++1 = long opportunity
+-1 = short opportunity
+ 0 = no trade / insufficient edge
+```
+
+De Prado’s financial ML framework explicitly covers fixed-horizon labeling, dynamic thresholds, triple-barrier labeling, learning side/size, meta-labeling, sample weights, class weights, bet sizing from predicted probabilities, and backtest statistics. That is almost exactly the structure needed here. ([Barnes & Noble][2])
+
+### Labeler B: constrained oracle position optimizer
+
+This is closer to your original idea. For each training fold, solve for the best hindsight position path:
+
+```text
+position_t ∈ {-1, 0, +1}
+```
+
+where:
+
+```text
++1 = long
+ 0 = flat
+-1 = short
+```
+
+The strategy return is:
+
+```text
+strategy_return_t =
+    position_{t-1} * asset_return_t
+    - commission_t
+    - spread_cost_t
+    - slippage_t
+    - borrow_cost_t
+    - market_impact_t
+```
+
+The optimizer should maximize a risk-adjusted utility, not just raw profit:
+
+```text
+objective =
+    OOS-like Sortino
+    - λ1 * max_drawdown
+    - λ2 * turnover
+    - λ3 * trade_count_penalty
+    - λ4 * class_imbalance_penalty
+    - λ5 * exposure_concentration_penalty
+```
+
+For labeling, I would usually prefer **Sortino** over Sharpe because the labeler should care more about downside volatility than upside volatility. Sharpe is still reported.
+
+The oracle must obey constraints:
+
+```text
+min_hold
+max_hold
+max_turnover
+max_position
+no instant re-entry after stop
+no lookahead in features
+realistic execution delay
+transaction costs
+spread/slippage
+minimum edge after costs
+```
+
+The output should not be “buy/sell everywhere.” It should be:
+
+```text
+take_trade_label ∈ {0, 1}
+side_label       ∈ {-1, +1}, only when take_trade_label = 1
+action_label     ∈ {enter_long, enter_short, exit, hold}, for audit/debugging
+sample_weight    = strength of oracle edge
+```
+
+This lets us train binary classifiers while still supporting realistic trading.
+
+## 3. Handling class balance without corrupting the labels
+
+Your 30–50% signal requirement is directionally right for training, but I would not force the live trader to trade 30–50% of the time. Instead:
+
+```text
+take_trade_label positive rate: target 30–50% inside research labels
+long/short balance: neither side below ~20–25% of active labels unless market regime is genuinely one-sided
+```
+
+If the labeler naturally produces only 5% high-quality trades, do not relabel bad trades as good. Instead, use event sampling, class weights, sample weights, or meta-labeling. Accuracy alone is weak under imbalance, so the report should include balanced accuracy, precision/recall, log loss, Brier score, calibration curves, and PnL by confidence decile. Scikit-learn defines balanced accuracy as average recall over classes, which is more informative than raw accuracy when labels are imbalanced. ([Scikit-learn][3])
+
+The best structure is:
+
+```text
+Classifier 1: take/no-take
+Classifier 2: long/short side, conditional on take
+Trader: converts calibrated probabilities into entries, exits, and sizes
+```
+
+That is stronger than a single buy/sell classifier.
+
+## 4. Feature set
+
+All features must be computed as of time `t`, never using future information. Rolling normalizers, scalers, PCA, feature selection, and imputation must be fit only inside the training fold.
+
+I would include these feature groups:
+
+| Feature group                  | Examples                                                                        |
+| ------------------------------ | ------------------------------------------------------------------------------- |
+| Return features                | log returns, multi-horizon returns, return z-scores, gap returns                |
+| Trend                          | moving-average slopes, EMA ratios, MACD-style spreads, Donchian breakouts       |
+| Momentum                       | RSI-like features, rate of change, stochastic oscillator, percentile rank       |
+| Volatility                     | EWMA vol, realized vol, ATR, Bollinger bandwidth, volatility-of-volatility      |
+| Drawdown/state                 | rolling drawdown, distance from high/low, time since local high/low             |
+| Volume/liquidity               | volume z-score, dollar volume, VWAP distance, OBV-like flow                     |
+| Microstructure, if intraday    | spread, book imbalance, signed volume, trade intensity, depth imbalance         |
+| Regime                         | rolling autocorrelation, trend strength, variance ratio, realized skew/kurtosis |
+| Cross-asset                    | index/sector ETF return, VIX/vol index, rates, FX, commodity proxy              |
+| Calendar                       | time of day, day of week, month-end, earnings/FOMC/news blackout flags          |
+| Alternative data, if available | news sentiment, options IV/skew, analyst/earnings metadata                      |
+
+For only 1,000 points, I would not blindly throw thousands of features into the model. I would generate many, then use cross-fold feature stability, permutation importance, and regularization to keep the final feature set small enough to generalize.
+
+## 5. Classifier search
+
+The system should test many classifiers, but the selection criterion should be:
+
+```text
+best downstream out-of-fold trader performance
++ acceptable classifier calibration
++ acceptable balanced accuracy
++ stable results across folds
+```
+
+not just maximum classifier accuracy.
+
+I would test:
+
+| Family              | Models                                                                                 |
+| ------------------- | -------------------------------------------------------------------------------------- |
+| Baselines           | logistic regression, elastic-net logistic, linear SVM with calibration                 |
+| Tree ensembles      | Random Forest, ExtraTrees, HistGradientBoosting                                        |
+| Boosting            | LightGBM, XGBoost, CatBoost                                                            |
+| Small neural models | MLP, 1D CNN/TCN, small Transformer only if more data or pooled multi-asset data exists |
+| Ensembles           | probability averaging, rank averaging, stacked meta-model using only OOF predictions   |
+
+For tabular financial features, boosted trees are usually the first serious candidate. LightGBM is designed as an efficient tree-based gradient boosting framework with faster training, lower memory use, parallel/distributed support, and large-scale data support according to its documentation. ([LightGBM Documentation][4])
+
+The classifier probabilities must be calibrated. Scikit-learn’s calibration documentation notes that classifier probability outputs may be poor estimates of true probabilities and provides calibration tools to improve them. ([Scikit-learn][5])
+
+## 6. Out-of-fold confidence dataset
+
+This artifact is critical. For every usable point in the first 1,000, create:
+
+```text
+timestamp
+fold_id
+features_hash
+labeler_id
+y_take
+y_side
+p_take_oof
+p_long_oof
+p_short_oof
+p_calibrated_long
+p_calibrated_short
+sample_weight
+realized_return_window
+```
+
+Rules:
+
+```text
+No row is predicted by a classifier trained on that row.
+No row is predicted by a classifier trained on overlapping label windows.
+Scaler/calibrator/feature selector is fit only on the fold training data.
+The last max_horizon rows before the 100-point holdout are dropped or truncated so the holdout is not used to create training labels.
+```
+
+That OOF dataset becomes the only training data for the trader optimizer.
+
+## 7. Trader optimizer
+
+The trader is not just a threshold. It is a state machine.
+
+### Entry rules
+
+Search over:
+
+```text
+long_entry_threshold
+short_entry_threshold
+take_trade_threshold
+minimum_expected_edge
+minimum_confidence_gap
+minimum_volatility
+maximum_volatility
+maximum_spread
+cooldown_after_loss
+cooldown_after_exit
+```
+
+Example:
+
+```text
+enter_long if:
+    p_take >= θ_take
+    p_long >= θ_long
+    p_long - p_short >= θ_gap
+    expected_edge_long > cost_buffer
+    volatility_regime allowed
+    spread/liquidity allowed
+```
+
+### Exit rules
+
+Search over:
+
+```text
+classifier_confidence_exit
+opposite_signal_exit
+stop_loss
+take_profit
+trailing_stop
+break_even_stop
+min_hold
+max_hold
+time_stop
+volatility_stop
+session_end_exit
+news_blackout_exit
+```
+
+### Risk and sizing
+
+Search over:
+
+```text
+fixed_size
+volatility_target_size
+fractional_kelly_cap
+max_position_size
+max_daily_loss
+max_drawdown_kill_switch
+max_turnover
+max_trades_per_day/session
+max_correlation_exposure, if multi-asset
+```
+
+Position sizing should come from calibrated probability and expected payoff, but it must be capped. A practical sizing formula:
+
+```text
+edge = p_win * avg_win - (1 - p_win) * avg_loss - cost
+
+raw_kelly = edge / payoff_variance
+
+size = min(
+    max_position,
+    kelly_fraction * raw_kelly,
+    volatility_target_size,
+    liquidity_cap
+)
+```
+
+### Trader objective
+
+Optimize the trader on OOF predictions:
+
+```text
+score =
+    median_CV_Sortino
+    - 0.25 * max_drawdown
+    - 0.10 * turnover
+    - 0.10 * slippage_sensitivity
+    - penalty_if_too_few_trades
+    - penalty_if_fold_instability_high
+```
+
+I would use **CMA-ES**, random search, and Bayesian/TPE optimization. In Rust, the `cmaes` crate is documented as an implementation suitable for high-dimensional, nonlinear, non-convex, noisy objectives. For Python-side model hyperparameter tuning, Optuna is specifically designed for ML hyperparameter optimization and dynamic search spaces. ([Docs.rs][6])
+
+## 8. Multiple-testing protection
+
+Because this plan tests many labelers, classifiers, features, and trader rules, the backtest will be highly vulnerable to selection bias. Bailey and López de Prado explicitly warn that backtest optimizers can search many parameter combinations, inflate simulated performance, and produce over-optimistic expectations; their Deflated Sharpe Ratio corrects for selection bias under multiple testing and non-normal returns. ([SSRN][7])
+
+So every research run should track:
+
+```text
+number_of_labeler_trials
+number_of_classifier_trials
+number_of_trader_trials
+best_in_sample_metric
+OOF_metric_distribution
+holdout_metric
+Deflated Sharpe Ratio
+Probabilistic Sharpe Ratio
+Probability of Backtest Overfitting
+```
+
+Do not deploy a model because it has one beautiful Sharpe. Deploy only if performance is stable across folds, survives cost/slippage stress, and does not collapse on the untouched 100-point simulation.
+
+## 9. Mostly Rust architecture
+
+I would keep live trading almost entirely in Rust. Python is only for offline ML training and model export.
+
+```text
+trading-research/
+  Cargo.toml
+  configs/
+    strategy.toml
+  crates/
+    data/
+      ingest.rs
+      corporate_actions.rs
+      point_in_time.rs
+    features/
+      rolling.rs
+      technicals.rs
+      microstructure.rs
+      regimes.rs
+    labels/
+      triple_barrier.rs
+      oracle_dp.rs
+      balance.rs
+    cv/
+      purged_kfold.rs
+      cpcv.rs
+      embargo.rs
+    backtest/
+      execution.rs
+      costs.rs
+      portfolio.rs
+      metrics.rs
+    trader/
+      state_machine.rs
+      risk.rs
+      rules.rs
+    optimize/
+      cmaes_runner.rs
+      random_search.rs
+      nsga.rs
+    ml_bridge/
+      write_training_matrix.rs
+      read_oof_predictions.rs
+      onnx_inference.rs
+    live/
+      broker.rs
+      risk_guard.rs
+      event_loop.rs
+  python/
+    train_classifiers.py
+    export_onnx.py
+    optuna_search.py
+  artifacts/
+    features.parquet
+    labels.parquet
+    oof_predictions.parquet
+    model.onnx
+    trader_config.toml
+    report.json
+```
+
+Use Rust + Polars for ingestion and feature engineering. Polars’ core is written in Rust, supports lazy query optimization, streaming/out-of-core processing, and is suitable for structured data pipelines. ([Polars User Guide][8])
+
+For live inference, use ONNX Runtime from Rust through `ort`, or use Treelite for tree ensembles. The `ort` crate is a Rust binding for ONNX Runtime, while Treelite can import XGBoost, LightGBM, and several scikit-learn tree models for prediction. ([Docs.rs][9])
+
+For Python interoperability during research, PyO3 can wrap Rust code for Python or run Python from Rust, but I would avoid Python in the live execution loop unless absolutely necessary. ([PyO3][10])
+
+## 10. Deployment flow
+
+The final deployment artifact should contain:
+
+```text
+model.onnx or tree_model.bin
+feature_schema.json
+feature_normalization_state.json
+calibration_model.json
+trader_config.toml
+risk_config.toml
+training_report.json
+git_commit_hash
+data_snapshot_hash
+```
+
+Live loop:
+
+```text
+1. Receive new bar / tick.
+2. Update rolling feature state.
+3. Validate feature schema.
+4. Run classifier.
+5. Calibrate probability.
+6. Trader state machine decides: enter, hold, exit, flip, or do nothing.
+7. Risk manager approves or rejects.
+8. Execution engine sends order.
+9. Log every decision, feature vector, probability, and rule trigger.
+```
+
+## 11. Final report that should be produced
+
+The research report should include at minimum:
+
+| Section            | Required output                                                                                    |
+| ------------------ | -------------------------------------------------------------------------------------------------- |
+| Label report       | class balance, long/short balance, oracle Sortino, oracle turnover, label stability                |
+| Classifier report  | OOF accuracy, balanced accuracy, precision, recall, F1, ROC-AUC, PR-AUC, log loss, Brier score     |
+| Calibration report | reliability curve, confidence deciles, realized edge by confidence bucket                          |
+| Trader report      | OOF Sharpe, OOF Sortino, max drawdown, turnover, hit rate, profit factor, average trade, tail loss |
+| Robustness         | 2x/3x cost stress, slippage stress, fold dispersion, feature ablation, seed stability              |
+| Multiple-testing   | number of trials, Deflated Sharpe, PBO estimate                                                    |
+| 100-point holdout  | sequential classifier accuracy, trader PnL, Sharpe/Sortino, drawdown, trade count                  |
+
+A sample model comparison table should look like:
+
+```text
+model         OOF_acc  OOF_bal_acc  Brier  OOF_Sortino  DSR   holdout_PnL  holdout_Sortino
+LightGBM      ...      ...          ...    ...          ...   ...          ...
+CatBoost      ...      ...          ...    ...          ...   ...          ...
+XGBoost       ...      ...          ...    ...          ...   ...          ...
+ElasticNet    ...      ...          ...    ...          ...   ...          ...
+RF/ExtraTrees ...      ...          ...    ...          ...   ...          ...
+```
+
+## 12. The “best” version in one sentence
+
+Build a **Rust-first, purged/CPCV, nested-validation system** where oracle labels are constrained and cost-aware, classifiers are selected by downstream OOF trading performance rather than accuracy alone, probabilities are calibrated, the trader is optimized on out-of-fold confidence scores, and the final trained classifier + trader must pass an untouched 100-point sequential holdout before any paper or live deployment.
+
+[1]: https://github.com/hudson-and-thames/mlfinlab/blob/master/mlfinlab/cross_validation/combinatorial.py "mlfinlab/mlfinlab/cross_validation/combinatorial.py at master · hudson-and-thames/mlfinlab · GitHub"
+[2]: https://www.barnesandnoble.com/w/advances-in-financial-machine-learning-marcos-lopez-de-prado/1127157552 "Advances in Financial Machine Learning by Marcos Lopez de Prado, Hardcover | Barnes & Noble®"
+[3]: https://scikit-learn.org/stable/modules/generated/sklearn.metrics.balanced_accuracy_score.html "balanced_accuracy_score — scikit-learn 1.8.0 documentation"
+[4]: https://lightgbm.readthedocs.io/ "Welcome to LightGBM’s documentation! — LightGBM 4.6.0 documentation"
+[5]: https://scikit-learn.org/stable/modules/calibration.html "1.16. Probability calibration — scikit-learn 1.8.0 documentation"
+[6]: https://docs.rs/cmaes "cmaes - Rust"
+[7]: https://papers.ssrn.com/sol3/papers.cfm?abstract_id=2460551 "The Deflated Sharpe Ratio: Correcting for Selection Bias, Backtest Overfitting and Non-Normality by David H. Bailey, Marcos Lopez de Prado :: SSRN"
+[8]: https://docs.pola.rs/ "Index - Polars user guide"
+[9]: https://docs.rs/ort "ort - Rust"
+[10]: https://pyo3.rs/ "Introduction - PyO3 user guide"
+

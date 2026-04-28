@@ -1,0 +1,563 @@
+Your plan has the right architecture: **oracle labeling → classifier → out-of-fold confidence stream → trader optimizer → frozen deployment**. The part I would change most aggressively is the leakage control. If the “best possible” labels, classifier, confidence thresholds, and trader rules are all optimized on the same 1,000 points, the system will look brilliant in research and often fail live. Backtest-overfitting is a known failure mode in investment simulations, and Bailey/López de Prado’s PBO and Deflated Sharpe Ratio work exists specifically because ordinary holdouts are often unreliable in this setting. ([SSRN][1])
+
+## The improved strategy
+
+Use **two models**, not one:
+
+1. **Side model:** predicts direction: long vs short, or buy vs sell.
+2. **Meta/trade model:** predicts whether the trade should be taken at all.
+
+That is much better than forcing a single binary classifier to solve both “which side?” and “should I trade?” Meta-labeling is a standard way to separate those two decisions: the primary model proposes a side, and the meta model predicts whether that proposed trade is worth taking. Triple-barrier labeling is also useful because it defines outcomes by profit-taking, stop-loss, and time barriers instead of naive next-bar direction. ([Mlfin.py][2])
+
+The labels I would use are:
+
+```text
+action_label[t] ∈ {NO_TRADE, ENTER_LONG, ENTER_SHORT}
+
+For the trade/meta classifier:
+    y_trade[t] = 1 if action_label[t] is ENTER_LONG or ENTER_SHORT
+               = 0 if action_label[t] is NO_TRADE
+
+For the side classifier:
+    y_side[t] = 1 if action_label[t] is ENTER_LONG
+              = 0 if action_label[t] is ENTER_SHORT
+```
+
+Your 30–50% balance target should apply mainly to `y_trade`, not necessarily to every raw bar. Better: create **event samples** first, then require roughly:
+
+```text
+0.30 <= mean(y_trade) <= 0.50
+0.35 <= mean(y_side among trades) <= 0.65
+```
+
+Do not force balance by corrupting labels. Penalize bad label distributions during label optimization, and use sample weights/class weights during model fitting.
+
+---
+
+## The correct train/test structure
+
+For your first run:
+
+```text
+Bars 0–999:      research/train/validation
+Bars 1000–1099: final untouched 100-point forward test
+```
+
+Inside the first 1,000 bars, use **purged, embargoed, time-aware cross-validation**, not random K-fold. Scikit-learn’s `TimeSeriesSplit` exists because ordinary CV can train on future data and test on past data, and its `gap` parameter excludes observations at the end of each training set before the test set. ([Scikit-learn][3]) For financial labels that span future intervals, I would go further and use **Combinatorial Purged CV**: purging removes training samples whose label intervals overlap the test samples, and embargoing removes samples immediately after test observations to reduce serial-correlation leakage. ([skfolio][4])
+
+The rule:
+
+```text
+Every p_oof[t] must be produced by a model that never trained on:
+    1. row t,
+    2. future of row t,
+    3. any sample whose label horizon overlaps row t,
+    4. any row inside the embargo gap.
+```
+
+Then the trader optimizer is trained only on the **out-of-fold probability stream**, never on in-sample classifier probabilities.
+
+---
+
+## Labeling optimizer: better than “perfect hindsight peaks”
+
+The dangerous version is: “find the perfect historical buy/sell points, then ask ML to imitate them.” That often creates labels too complex to learn. Instead, use a constrained oracle that produces **learnable, path-dependent trade labels**.
+
+For each event timestamp `t`, generate candidate trades:
+
+```text
+side ∈ {long, short}
+entry = next executable price after t
+exit = first of:
+    stop_loss hit
+    take_profit hit
+    trailing_stop hit
+    max_hold reached
+    reversal signal
+    volatility/risk kill-switch
+```
+
+Then compute net return after spread, commissions, slippage, and borrow/financing assumptions.
+
+For each candidate interval, compute utility:
+
+```text
+u = net_return
+    - λ_downside * max(0, -net_return)^2
+    - λ_turnover * transaction_cost
+    - λ_hold * holding_time
+    - λ_complexity * rule_complexity
+```
+
+Then choose a set of non-overlapping trades that maximizes fold-level utility while satisfying:
+
+```text
+30–50% event signal rate
+minimum number of trades
+max exposure
+max consecutive same-side trades
+min/max hold constraints
+max drawdown penalty
+long/short balance constraint
+```
+
+For exactness, this can be implemented as weighted interval scheduling or mixed-integer optimization. For direct Sharpe/Sortino optimization, use a black-box outer optimizer over penalty weights, because Sharpe and Sortino are not additive trade-by-trade.
+
+The labeler objective should not be plain Sharpe. I would optimize:
+
+```text
+label_score =
+    median_OOS_sortino
+  + 0.25 * p25_OOS_sortino
+  - drawdown_penalty
+  - turnover_penalty
+  - class_imbalance_penalty
+  - label_instability_penalty
+  - complexity_penalty
+```
+
+This produces labels that are profitable, less fragile, and more learnable.
+
+---
+
+## Feature set
+
+Use only point-in-time features available before the order is placed. Every feature must be shifted so the trade decision at `t` uses information available at or before `t`.
+
+I would include these feature groups:
+
+**Price/return features**
+
+```text
+log returns: 1, 2, 3, 5, 10, 20, 50 bars
+rolling z-scores
+rolling volatility
+realized volatility
+ATR
+range/true range
+close-to-high/low location
+rolling skew/kurtosis
+drawdown from rolling high
+distance from VWAP
+distance from moving averages
+trend slope via rolling regression
+```
+
+**Technical indicators**
+
+```text
+RSI
+MACD
+stochastics
+Bollinger Band position
+Keltner/Donchian channel position
+ADX/trend strength
+OBV
+money flow index
+rate of change
+efficiency ratio
+```
+
+Rust has a `ta` crate with common technical indicators such as EMA, SMA, RSI, MACD, Bollinger Bands, ATR, ROC, OBV, and others. ([Docs.rs][5])
+
+**Volume/liquidity/microstructure**
+
+```text
+volume z-score
+dollar volume
+relative volume
+bid/ask spread
+spread z-score
+order book imbalance
+microprice
+depth imbalance
+trade imbalance
+slippage estimate
+volatility-adjusted liquidity
+```
+
+**Regime features**
+
+```text
+volatility regime
+trend regime
+correlation to index
+market beta
+sector beta
+risk-on/risk-off proxy
+VIX / implied-vol proxy if available
+rate/FX/commodity factors if relevant
+```
+
+**Cross-sectional stock features**
+
+```text
+ranked return vs sector
+ranked volatility vs sector
+relative strength vs index
+residual return after market/sector beta
+pair spread / cointegration features
+sector momentum
+```
+
+**Calendar/event features**
+
+```text
+time of day
+day of week
+month-end/quarter-end
+earnings blackout flag
+ex-dividend flag
+macro event flag
+index rebalance flag
+```
+
+**Optional alternative data**
+
+```text
+news sentiment
+analyst revisions
+options implied volatility
+options skew
+short interest
+fundamental revisions
+insider/filing features
+```
+
+For one asset with only 1,000 bars, keep the feature set small. For a serious system, train on a **panel**: many stocks × many dates. The strategy will generalize much better if the model sees cross-sectional variation rather than one short path.
+
+---
+
+## Classifiers to test
+
+I would test many classifiers, but choose the winner by **trader out-of-sample performance**, not classifier accuracy alone.
+
+Start with these:
+
+```text
+Baseline 0: no-trade
+Baseline 1: simple momentum/reversion rule
+Logistic regression with elastic net
+Random forest
+ExtraTrees
+Histogram gradient boosting
+LightGBM
+CatBoost
+XGBoost
+SVM / RBF SVM for small feature sets
+Small MLP only if sample size becomes much larger
+Calibrated ensemble of the best 2–3 models
+```
+
+LightGBM has a scikit-learn API with `LGBMClassifier`, and CatBoost’s `CatBoostClassifier` supports `fit`, `predict`, and `predict_proba`. ([LightGBM Documentation][6]) For pure Rust experiments, SmartCore and Linfa are reasonable baselines; SmartCore includes classifiers/regressors including SVMs, random forests, tree models, and XGBoost, while Linfa provides common statistical-learning algorithms. ([Docs.rs][7])
+
+For each classifier, report:
+
+```text
+ordinary accuracy
+balanced accuracy
+MCC
+ROC-AUC
+PR-AUC
+log loss
+Brier score
+calibration slope/intercept
+precision at top confidence deciles
+trader Sharpe/Sortino using OOF probabilities
+```
+
+Balanced accuracy is more appropriate than plain accuracy when classes are imbalanced because it averages recall across classes, and MCC is useful because it accounts for true/false positives and negatives even when class sizes differ. ([Scikit-learn][8]) For a trader, probability calibration is critical because the confidence numbers drive thresholds and sizing; scikit-learn describes well-calibrated probabilities as probabilities that can be interpreted as confidence levels, and Brier/log-loss style metrics evaluate probabilistic predictions. ([Scikit-learn][9])
+
+---
+
+## Trader optimizer
+
+The trader should receive only:
+
+```text
+p_trade[t]
+p_long[t]
+p_short[t]
+features needed for risk filters
+current position state
+market state
+```
+
+The trader should have a rich parameter set:
+
+```rust
+struct TraderParams {
+    // Entry thresholds
+    p_trade_min: f64,
+    p_long_min: f64,
+    p_short_min: f64,
+    min_edge_bps: f64,
+    min_confidence_gap: f64,
+
+    // Exit thresholds
+    p_exit_on_decay: f64,
+    p_reverse_min: f64,
+
+    // Stops and targets
+    stop_loss_atr: f64,
+    take_profit_atr: f64,
+    trailing_stop_atr: f64,
+    break_even_after_atr: f64,
+
+    // Holding constraints
+    min_hold_bars: usize,
+    max_hold_bars: usize,
+    cooldown_bars: usize,
+
+    // Risk sizing
+    risk_per_trade: f64,
+    max_position_pct: f64,
+    max_gross_exposure: f64,
+    max_daily_loss: f64,
+    vol_target: f64,
+    kelly_fraction_cap: f64,
+
+    // Market filters
+    max_spread_bps: f64,
+    min_volume_z: f64,
+    max_volatility_z: f64,
+    trend_regime_required: bool,
+    earnings_blackout_bars: usize,
+
+    // Execution
+    order_type: OrderType,
+    limit_offset_bps: f64,
+    max_slippage_bps: f64,
+}
+```
+
+The objective should be robust, not just maximum Sharpe:
+
+```text
+trader_score =
+    median_CV_sortino
+  + 0.25 * p25_CV_sortino
+  - 0.50 * max_drawdown_penalty
+  - turnover_penalty
+  - cost_sensitivity_penalty
+  - parameter_instability_penalty
+  - overfit_penalty
+```
+
+Use Optuna for ML/trader hyperparameter orchestration and pruning, because it supports samplers such as TPE, CMA-ES, Gaussian-process sampling, NSGA-II, and pruning methods. ([Optuna][10]) For continuous black-box trader parameters, differential evolution is also appropriate because it is stochastic, gradient-free, and searches large parameter spaces, though it can need many function evaluations. ([SciPy Documentation][11]) In Rust, `argmin` and `cmaes` are good options for native optimization loops. ([Docs.rs][12])
+
+The key rule: **optimize trader parameters on out-of-fold probabilities only**. Do not optimize using probabilities from a classifier evaluated on the same rows it trained on.
+
+---
+
+## Final 100-point forward test
+
+After selecting:
+
+```text
+labeler spec
+feature set
+classifier family
+classifier hyperparameters
+calibrator
+trader parameters
+risk parameters
+```
+
+freeze everything.
+
+Then:
+
+```text
+Train final classifier on bars 0–999.
+Deploy frozen classifier + frozen trader.
+Run once on bars 1000–1099.
+Do not tune on these 100 points.
+```
+
+Report the 100-point test separately:
+
+```text
+net return
+Sharpe
+Sortino
+max drawdown
+number of trades
+win rate
+profit factor
+average hold
+average slippage
+turnover
+long/short exposure
+worst trade
+best trade
+cost-stress result at 2x and 4x costs
+```
+
+If the 100-point test fails and you adjust the system, that 100-point block is no longer a clean holdout. You would need a new untouched test block.
+
+---
+
+## Mostly-Rust implementation
+
+I would build the production system in Rust and use Python only for ML training/search where it clearly adds value.
+
+Recommended architecture:
+
+```text
+rust-core/
+    data/
+        ingest.rs
+        corporate_actions.rs
+        parquet_store.rs
+    features/
+        technical.rs
+        microstructure.rs
+        regimes.rs
+        cross_sectional.rs
+    labeling/
+        triple_barrier.rs
+        oracle_interval_optimizer.rs
+        label_balance.rs
+    cv/
+        purged_split.rs
+        embargo.rs
+        combinatorial_paths.rs
+    backtest/
+        event_engine.rs
+        fill_model.rs
+        slippage.rs
+        broker.rs
+        metrics.rs
+    trader/
+        strategy.rs
+        risk_manager.rs
+        position_sizer.rs
+        exits.rs
+    optimization/
+        differential_evolution.rs
+        cmaes.rs
+        objective.rs
+    model/
+        lightgbm_scorer.rs
+        catboost_scorer.rs
+        onnx_scorer.rs
+        calibrator.rs
+
+python-ml/
+    train_classifier.py
+    optuna_search.py
+    calibrate.py
+    export_model.py
+
+configs/
+    feature_set.toml
+    labeler_bounds.toml
+    trader_bounds.toml
+    cost_model.toml
+```
+
+For dataframes and storage, I would use Arrow/Parquet with either Polars or DataFusion. Polars has a lazy API that defers execution and allows query optimization such as predicate/projection pushdown, and DataFusion is a Rust query engine using Apache Arrow as its in-memory format. ([Polars User Guide][13])
+
+For backtesting/live trading, either build a custom event-driven engine or use an existing Rust-oriented trading engine. Barter is a Rust framework for live trading, paper trading, backtesting, strategies, risk managers, and performance statistics; NautilusTrader also has a Rust implementation that can run strategies, backtests, and live trading without Python. ([Docs.rs][14])
+
+For model export/deployment:
+
+```text
+LightGBM:
+    train in Python
+    export model text / C++ if-else
+    implement or bind scorer in Rust
+
+CatBoost:
+    train in Python
+    export JSON, C++, or ONNX where supported
+    implement JSON/tree scorer or bind generated C++
+
+Pure Rust:
+    SmartCore / Linfa for baseline and simpler production models
+```
+
+LightGBM supports a `convert_model` task for converting models into if-else format, and CatBoost can save models to formats including JSON, standalone Python, standalone C++, and ONNX-ML with some limitations. ([LightGBM Documentation][15])
+
+---
+
+## The research loop I would actually run
+
+```text
+1. Build point-in-time feature matrix.
+2. Generate event samples.
+3. For each labeler candidate:
+       create constrained oracle labels
+       check class balance and label stability
+4. For each classifier family:
+       run purged/CPCV out-of-fold training
+       collect p_trade, p_long, p_short for all train rows
+       calibrate probabilities using only fold-safe data
+5. For each classifier's OOF probability stream:
+       optimize trader parameters on OOF predictions
+       score by robust fold-level Sortino/Sharpe after costs
+6. Select top systems by:
+       median OOS Sortino
+       low drawdown
+       stability across folds
+       reasonable trade count
+       cost robustness
+       acceptable classifier calibration
+7. Freeze the best full pipeline.
+8. Train final classifier on bars 0–999.
+9. Run untouched bars 1000–1099 once.
+10. Only then paper trade / shadow trade before live capital.
+```
+
+The final selection criterion should be:
+
+```text
+Best stable risk-adjusted trader performance after costs,
+using only out-of-fold probabilities,
+with acceptable classifier calibration,
+and acceptable forward 100-point behavior.
+```
+
+Not:
+
+```text
+highest classifier accuracy
+highest in-sample Sharpe
+highest labeler-oracle Sharpe
+highest single-fold result
+```
+
+## Bottom line
+
+Your idea is powerful if rebuilt as a **nested, leakage-resistant, cost-aware, calibrated probability pipeline**. The best version is:
+
+```text
+Constrained oracle labels
++ side classifier
++ meta trade classifier
++ purged/CPCV out-of-fold probabilities
++ robust trader optimizer
++ frozen 100-point forward test
++ mostly Rust execution/backtesting/risk
++ Python only for ML search/training
+```
+
+The single most important safeguard is this: **the trader must be tuned only on predictions that were out-of-sample for the classifier that produced them**. That one rule will eliminate a huge amount of false edge.
+
+[1]: https://papers.ssrn.com/sol3/papers.cfm?abstract_id=2326253 "The Probability of Backtest Overfitting by David H. Bailey, Jonathan Borwein, Marcos Lopez de Prado, Qiji Jim Zhu :: SSRN"
+[2]: https://mlfinpy.readthedocs.io/en/latest/_modules/mlfinpy/labeling/labeling.html "mlfinpy.labeling.labeling - Mlfin.py"
+[3]: https://scikit-learn.org/stable/modules/generated/sklearn.model_selection.TimeSeriesSplit.html "TimeSeriesSplit — scikit-learn 1.8.0 documentation"
+[4]: https://skfolio.org/generated/skfolio.model_selection.CombinatorialPurgedCV.html "skfolio.model_selection.CombinatorialPurgedCV - skfolio"
+[5]: https://docs.rs/ta "ta - Rust"
+[6]: https://lightgbm.readthedocs.io/en/latest/Python-API.html "Python API — LightGBM 4.6.0.99 documentation"
+[7]: https://docs.rs/smartcore "smartcore - Rust"
+[8]: https://scikit-learn.org/stable/modules/generated/sklearn.metrics.balanced_accuracy_score.html "balanced_accuracy_score — scikit-learn 1.8.0 documentation"
+[9]: https://scikit-learn.org/stable/modules/calibration.html "1.16. Probability calibration — scikit-learn 1.8.0 documentation"
+[10]: https://optuna.readthedocs.io/en/stable/tutorial/10_key_features/003_efficient_optimization_algorithms.html "Efficient Optimization Algorithms — Optuna 4.8.0 documentation"
+[11]: https://docs.scipy.org/doc/scipy/reference/generated/scipy.optimize.differential_evolution.html "differential_evolution — SciPy v1.17.0 Manual"
+[12]: https://docs.rs/argmin/?utm_source=chatgpt.com "argmin - Rust"
+[13]: https://docs.pola.rs/user-guide/concepts/lazy-api/ "Lazy API - Polars user guide"
+[14]: https://docs.rs/barter "barter - Rust"
+[15]: https://lightgbm.readthedocs.io/en/latest/Parameters.html "Parameters — LightGBM 4.6.0.99 documentation"
+
