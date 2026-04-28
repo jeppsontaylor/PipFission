@@ -141,14 +141,24 @@ struct PyEnv {
 
 impl PyEnv {
     fn from_env() -> Self {
-        Self {
-            python: std::env::var("PIPELINE_PYTHON_BIN")
-                .map(PathBuf::from)
-                .unwrap_or_else(|_| PathBuf::from("./.venv/bin/python")),
-            research_dir: std::env::var("PIPELINE_RESEARCH_DIR")
-                .map(PathBuf::from)
-                .unwrap_or_else(|_| PathBuf::from("./research")),
-        }
+        // Resolve both paths to absolute so they work after the
+        // subprocess sets `current_dir(research_dir)`. Relative paths
+        // would otherwise be interpreted against the new cwd and the
+        // python interpreter wouldn't be found.
+        let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        let python = std::env::var("PIPELINE_PYTHON_BIN")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| PathBuf::from("./.venv/bin/python"));
+        let python = if python.is_absolute() { python } else { cwd.join(&python) };
+        let research_dir = std::env::var("PIPELINE_RESEARCH_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| PathBuf::from("./research"));
+        let research_dir = if research_dir.is_absolute() {
+            research_dir
+        } else {
+            cwd.join(&research_dir)
+        };
+        Self { python, research_dir }
     }
 
     /// Build a `python -m research <subcmd...>` command rooted at

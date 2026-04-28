@@ -21,11 +21,11 @@ def run(
     n_bars: int = typer.Option(1000, "--n-bars", help="Trailing-bar window size."),
     run_id: Optional[str] = typer.Option(None, "--run-id", help="Override the auto-generated run id."),
     sigma_span: int = typer.Option(60, help="EWMA σ span (bars)."),
-    cusum_h_mult: float = typer.Option(2.0, help="CUSUM threshold = sigma * mult."),
+    cusum_h_mult: float = typer.Option(1.0, help="CUSUM threshold = sigma * mult. Lower = more candidate events; 1.0 ≈ ~265 events on 1000 forex bars."),
     pt_atr: float = typer.Option(2.0, help="Profit-take ATR multiple."),
     sl_atr: float = typer.Option(2.0, help="Stop-loss ATR multiple."),
     vert_horizon: int = typer.Option(36, help="Vertical-barrier horizon (bars)."),
-    min_edge: float = typer.Option(0.0005, help="Per-trade edge floor (fractional return)."),
+    min_edge: float = typer.Option(0.0, help="Per-trade edge floor (fractional return). 0 = keep all candidates; downstream cost model handles costs."),
     write: bool = typer.Option(True, help="Insert labels into DuckDB.labels."),
 ) -> None:
     """Optimise ideal buy/sell entries on the trailing N bars."""
