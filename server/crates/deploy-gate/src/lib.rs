@@ -55,6 +55,21 @@ impl DeploymentGateThresholds {
     /// Override any threshold via env. Same env-var names as the
     /// Python `from_env()` so the supervisor can set them once and
     /// both sides read the same values.
+    ///
+    /// Recognised env vars: `MIN_OOS_AUC`, `MAX_OOS_LOG_LOSS`,
+    /// `MIN_OOS_BALANCED_ACC`, `MIN_FINE_TUNE_SORTINO`,
+    /// `MAX_FINE_TUNE_DD_BP`, `REQUIRE_LOCKBOX_PASS`. Anything missing
+    /// or unparseable falls back to the corresponding default. Boolean
+    /// flags accept `1`, `true`, `yes`, `on` (case-insensitive).
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use deploy_gate::DeploymentGateThresholds;
+    /// // Reads from current process env; defaults fill any gaps.
+    /// let th = DeploymentGateThresholds::from_env();
+    /// assert!(th.min_oos_auc >= 0.0);
+    /// ```
     pub fn from_env() -> Self {
         fn f64_env(name: &str, default: f64) -> f64 {
             std::env::var(name).ok().and_then(|s| s.parse().ok()).unwrap_or(default)
@@ -113,6 +128,32 @@ pub struct GateResult {
 
 /// Pure evaluation. Doesn't touch the DB. Callers should `persist`
 /// the result.
+///
+/// Each threshold is checked independently; the returned
+/// [`GateResult::blocked_reasons`] contains a human-readable string
+/// per failed floor. `passed_gate` is `true` iff that vector is empty.
+///
+/// # Example
+///
+/// ```
+/// use deploy_gate::{evaluate, DeploymentGateThresholds, GateInputs};
+///
+/// let inputs = GateInputs {
+///     model_id: "demo".into(),
+///     instrument: "EUR_USD".into(),
+///     oos_auc: 0.60,
+///     oos_log_loss: 0.65,
+///     oos_brier: 0.20,
+///     oos_balanced_acc: 0.55,
+///     fine_tune_sortino: 0.50,
+///     fine_tune_max_dd_bp: 800.0,
+///     lockbox_passed: true,
+///     ts_ms: Some(1_700_000_000_000),
+/// };
+/// let result = evaluate(&inputs, &DeploymentGateThresholds::default());
+/// assert!(result.passed_gate);
+/// assert!(result.blocked_reasons.is_empty());
+/// ```
 pub fn evaluate(inputs: &GateInputs, thresholds: &DeploymentGateThresholds) -> GateResult {
     let mut reasons: Vec<String> = Vec::new();
     if inputs.oos_auc < thresholds.min_oos_auc {
@@ -168,7 +209,41 @@ pub fn evaluate(inputs: &GateInputs, thresholds: &DeploymentGateThresholds) -> G
 }
 
 /// Persist a `GateResult` to `model_deployment_gate`. Idempotent —
-/// DELETEs any prior row for the same `model_id` first.
+/// DELETEs any prior row for the same `model_id` first, so re-running
+/// the gate for the same model overwrites the prior decision rather
+/// than stacking duplicates.
+///
+/// The `blocked_reasons` vector is flattened to a single
+/// `"; "`-joined string in the DB. The `gate_thresholds_json` column
+/// captures the effective thresholds for forensic replay.
+///
+/// # Errors
+///
+/// Returns an error if the underlying DuckDB write fails (e.g. the
+/// `model_deployment_gate` table is missing or the file is not
+/// writable). Pure evaluation should never call this directly when
+/// the DB handle is unavailable; use [`evaluate`] for the read-only
+/// path.
+///
+/// # Example
+///
+/// ```no_run
+/// use deploy_gate::{evaluate, persist, DeploymentGateThresholds, GateInputs};
+/// use persistence::Db;
+///
+/// # fn run(db: &Db) -> anyhow::Result<()> {
+/// let inputs = GateInputs {
+///     model_id: "demo".into(),
+///     instrument: "EUR_USD".into(),
+///     oos_auc: 0.6, oos_log_loss: 0.65, oos_brier: 0.2,
+///     oos_balanced_acc: 0.55, fine_tune_sortino: 0.5,
+///     fine_tune_max_dd_bp: 800.0, lockbox_passed: true,
+///     ts_ms: None,
+/// };
+/// let result = evaluate(&inputs, &DeploymentGateThresholds::default());
+/// persist(db, &result)?;
+/// # Ok(()) }
+/// ```
 pub fn persist(db: &Db, result: &GateResult) -> Result<()> {
     let thresholds_json = serde_json::to_string(&result.thresholds)
         .context("serialize gate thresholds")?;
@@ -274,5 +349,129 @@ mod tests {
         th.require_lockbox_pass = false;
         let r = evaluate(&bad, &th);
         assert!(r.passed_gate, "blocked: {:?}", r.blocked_reasons);
+    }
+
+    // -- thresholds defaults & env --
+
+    #[test]
+    fn default_thresholds_are_conservative() {
+        let d = DeploymentGateThresholds::default();
+        assert!((d.min_oos_auc - 0.55).abs() < 1e-9);
+        assert!((d.max_oos_log_loss - 0.70).abs() < 1e-9);
+        assert!((d.min_oos_balanced_acc - 0.52).abs() < 1e-9);
+        assert!((d.min_fine_tune_sortino - 0.30).abs() < 1e-9);
+        assert!((d.max_fine_tune_dd_bp - 1500.0).abs() < 1e-9);
+        assert!(d.require_lockbox_pass);
+    }
+
+    #[test]
+    fn ts_ms_falls_back_to_now_when_unset() {
+        let mut inp = pass_inputs();
+        inp.ts_ms = None;
+        let before = chrono::Utc::now().timestamp_millis();
+        let r = evaluate(&inp, &DeploymentGateThresholds::default());
+        let after = chrono::Utc::now().timestamp_millis();
+        assert!(
+            r.ts_ms >= before && r.ts_ms <= after,
+            "ts_ms {} not in [{before}, {after}]",
+            r.ts_ms
+        );
+    }
+
+    #[test]
+    fn collects_multiple_blocked_reasons_at_once() {
+        // All-floors-fail: every reason should appear in the output.
+        let mut bad = pass_inputs();
+        bad.oos_auc = 0.40;
+        bad.oos_log_loss = 0.99;
+        bad.oos_balanced_acc = 0.40;
+        bad.fine_tune_sortino = 0.05;
+        bad.fine_tune_max_dd_bp = 5000.0;
+        bad.lockbox_passed = false;
+        let r = evaluate(&bad, &DeploymentGateThresholds::default());
+        assert!(!r.passed_gate);
+        assert_eq!(
+            r.blocked_reasons.len(),
+            6,
+            "expected all 6 floors to block, got: {:?}",
+            r.blocked_reasons
+        );
+    }
+
+    // -- persist round-trip --
+
+    fn tmp_db(label: &str) -> (persistence::Db, tempfile::TempDir) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join(format!("{label}.duckdb"));
+        let db = persistence::Db::open(&path).expect("open db");
+        (db, dir)
+    }
+
+    #[test]
+    fn persist_round_trips_a_passing_row() {
+        let (db, _t) = tmp_db("dg_pass");
+        let r = evaluate(&pass_inputs(), &DeploymentGateThresholds::default());
+        persist(&db, &r).expect("persist");
+        let (passed, blocked, mid): (bool, String, String) = db.with_conn(|c| {
+            c.query_row(
+                "SELECT passed_gate, blocked_reasons, model_id
+                 FROM model_deployment_gate WHERE model_id = ?",
+                duckdb::params![&r.model_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .expect("query")
+        });
+        assert!(passed);
+        assert_eq!(mid, r.model_id);
+        assert!(blocked.is_empty(), "blocked='{blocked}'");
+    }
+
+    #[test]
+    fn persist_is_idempotent_overwrites_prior_decision() {
+        let (db, _t) = tmp_db("dg_idem");
+        // First pass: failing.
+        let mut bad = pass_inputs();
+        bad.oos_auc = 0.40;
+        let r1 = evaluate(&bad, &DeploymentGateThresholds::default());
+        persist(&db, &r1).unwrap();
+
+        // Second pass: same model_id but now passing.
+        let r2 = evaluate(&pass_inputs(), &DeploymentGateThresholds::default());
+        persist(&db, &r2).unwrap();
+
+        let (n, passed): (i64, bool) = db.with_conn(|c| {
+            c.query_row(
+                "SELECT COUNT(*), MIN(passed_gate::INT)::BOOL
+                 FROM model_deployment_gate WHERE model_id = ?",
+                duckdb::params![&r2.model_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap()
+        });
+        assert_eq!(n, 1, "DELETE-then-INSERT should leave exactly one row");
+        assert!(passed, "second persist should overwrite to passing=true");
+    }
+
+    #[test]
+    fn persist_serialises_thresholds_json() {
+        let (db, _t) = tmp_db("dg_thresh");
+        let mut th = DeploymentGateThresholds::default();
+        th.min_oos_auc = 0.61;
+        th.require_lockbox_pass = false;
+        let r = evaluate(&pass_inputs(), &th);
+        persist(&db, &r).unwrap();
+        let json: String = db.with_conn(|c| {
+            c.query_row(
+                "SELECT gate_thresholds_json FROM model_deployment_gate
+                 WHERE model_id = ?",
+                duckdb::params![&r.model_id],
+                |row| row.get(0),
+            )
+            .unwrap()
+        });
+        let parsed: DeploymentGateThresholds =
+            serde_json::from_str(&json).expect("thresholds round-trip");
+        assert!((parsed.min_oos_auc - 0.61).abs() < 1e-9);
+        assert!(!parsed.require_lockbox_pass);
     }
 }

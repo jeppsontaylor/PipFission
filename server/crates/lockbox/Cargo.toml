@@ -22,3 +22,6 @@ metrics = { workspace = true }
 inference = { workspace = true }
 bar-features = { workspace = true }
 labeling = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

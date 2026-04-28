@@ -28,54 +28,81 @@ Entry points:
   The folder name is the release version (from
   `server/Cargo.toml::workspace.package.version`).
 
-Per-ticker quick reads (auto-rendered after every trade):
+Per-ticker quick reads (auto-rendered by the api-server after every
+trade close — read these first):
 
 - **`trade_logs/v1.0.1/<ticker>/LATEST.md`** — at-a-glance: cum_R,
   hit rate, last 5 trades, last 5 actions, last 10 features.
 - **`trade_logs/v1.0.1/<ticker>/summary.json`** — same data as a
-  machine-readable object.
+  machine-readable object (consumed by tools and the dashboard).
 
-Per-ticker raw streams:
+Per-ticker raw streams (all JSONL, capped at 2000 most-recent records):
 
 - `trade_logs/v1.0.1/<ticker>/trades.jsonl` — closed round-trips
   with full model + params + decision-chain context.
-- `trade_logs/v1.0.1/<ticker>/actions.jsonl` — `open_long` /
-  `open_short` / `close` events only (signal-to-noise high).
-- `trade_logs/v1.0.1/<ticker>/skip_summary.jsonl` — compacted runs
-  of consecutive skip bars (count + reason histogram + duration).
+- `trade_logs/v1.0.1/<ticker>/actions.jsonl` — **opens + closes
+  only** (`open_long` / `open_short` / `close`). High signal-to-noise.
+- `trade_logs/v1.0.1/<ticker>/skip_summary.jsonl` — **compacted**
+  runs of consecutive skip bars (count + reason histogram +
+  duration). Replaces per-bar skip rows.
 - `trade_logs/v1.0.1/<ticker>/features.jsonl` — 24-dim named
   feature vector + champion `p_long` / `p_short` / `calibrated` per
   closed bar.
 
-Cross-instrument streams:
+Cross-instrument streams (written by `pipeline-orchestrator`):
 
 - `trade_logs/v1.0.1/training_log.jsonl` — one line per pipeline
   run: zoo candidates, OOS metrics, winner, gate result, lockbox
   pass/fail, trader params, duration.
 - `trade_logs/v1.0.1/deployment_gate.jsonl` — gate decisions +
-  thresholds.
+  thresholds (from the Rust `deploy-gate` crate).
 - `trade_logs/v1.0.1/champion_changes.jsonl` — ONNX hot-swap events.
 
 ## 3. Architecture + design
 
 - **[`CLAUDE.md`](CLAUDE.md)** — project rules + always-on
-  architecture. Has the env-var reference for the api-server.
+  architecture (supervisor + api-server + sentinel handoff). Has the
+  env-var reference and the "what stays Python and why" split.
 - **[`tips/`](tips/)** — design source documents (purged CPCV,
   triple-barrier labelling, two-model architecture, deflated Sharpe,
   ONNX-in-Rust, …). 12 markdown files, 10–30 KB each.
 
 ## 4. Source tree
 
-- `server/crates/` — 18-crate Rust workspace. Always-on api-server,
-  persistence (DuckDB), inference (ONNX via `ort`), live-trader,
-  bar-aggregator, labeling, backtest, trader, metrics, …
+- `server/` — Rust workspace. Two binaries the operator runs directly:
+  - `target/release/api-server` — always-on streaming + REST/WS +
+    live-trader. Exits 75 to ask for a retrain.
+  - `target/release/pipeline-orchestrator` — Rust retrain entry point.
+    Owns observability + JSONL artifacts; spawns
+    `python -m research pipeline run` for the ML core.
+- `server/crates/` — 18-crate Rust workspace. Notable crates:
+  - `api-server` — REST/WS + DuckDB + ONNX + live-trader.
+  - `pipeline-orchestrator` — see above.
+  - `deploy-gate` — pure-Rust port of the Python deployment gate
+    (OOS floors, lockbox check).
+  - `lockbox` — single-shot sealed-slice holdout (composes inference
+    + backtest + metrics).
+  - `observability` — `RunTracker` for `pipeline_runs` row tracking.
+  - `metrics` — includes `metrics::pbo` (CSCV-based probability of
+    backtest overfitting) and `metrics::bootstrap` (percentile CI).
+  - plus persistence (DuckDB), inference (ONNX via `ort`),
+    bar-aggregator, labeling, backtest, trader, …
 - `research/` — Python pipeline (label → train → finetune → lockbox
-  → export → deployment gate). Most of this will migrate to Rust;
-  see [`STATUS.md`](STATUS.md) "Rust rewrite" section.
+  → export). Retained for the hard-constraint ML libs only:
+  LightGBM/XGBoost/CatBoost, sklearn (LogReg/MLP/ExtraTrees/HistGB/
+  CalibratedClassifierCV/SelectKBest), skl2onnx + onnxmltools, Optuna
+  (TPE side-training, NSGA-II trader fine-tune). Everything else
+  (gate, lockbox composition, observability, JSONL artifacts, stats)
+  is Rust now. See [`STATUS.md`](STATUS.md) "Rust rewrite" section.
 - `dashboard/` — Vite + React + TypeScript live dashboard.
 - `scripts/` — operator scripts:
-  - `api-server-supervisor.sh` — production launcher (handles the
-    auto-retrain handoff via sentinel + exit 75).
+  - `api-server-supervisor.sh` — **production launcher**. Runs
+    `api-server` in a loop; on exit 75, drains
+    `data/.retrain-pending` one instrument at a time via
+    `pipeline-orchestrator`, then restarts the api-server. Sets the
+    relaxed-regime env vars (`AUTO_RETRAIN_VIA_SENTINEL`,
+    `MIN_OOS_AUC`, `MAX_OOS_LOG_LOSS`, `REQUIRE_LOCKBOX_PASS`,
+    `RELAX_TRADER_PARAMS`).
   - `sync_trade_logs.sh` — opt-in periodic git push of `trade_logs/`.
   - `com.oanda.api-server.plist` / `com.oanda.trade-logs-sync.plist`
     — launchd templates (not installed by default).

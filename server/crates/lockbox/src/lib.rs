@@ -87,7 +87,27 @@ pub struct LockboxResult {
 }
 
 /// Returns true if a sealed `lockbox_results` row already exists for
-/// this `run_id`.
+/// this `run_id`. Use this before [`seal_lockbox`] when you want to
+/// short-circuit re-seal attempts; `seal_lockbox` itself is also
+/// idempotent on `run_id`, so the check is purely an optimisation.
+///
+/// # Errors
+///
+/// Propagates DuckDB query errors. Returns `Ok(false)` when the row
+/// does not exist.
+///
+/// # Example
+///
+/// ```no_run
+/// use lockbox::is_already_sealed;
+/// use persistence::Db;
+///
+/// # fn run(db: &Db) -> anyhow::Result<()> {
+/// if is_already_sealed(db, "run-2026-04-28-EUR_USD")? {
+///     println!("already sealed; skipping");
+/// }
+/// # Ok(()) }
+/// ```
 pub fn is_already_sealed(db: &Db, run_id: &str) -> Result<bool> {
     let g = db.with_conn(|conn| -> duckdb::Result<bool> {
         let mut stmt =
@@ -111,6 +131,47 @@ pub fn is_already_sealed(db: &Db, run_id: &str) -> Result<bool> {
 /// passes it in. The lockbox doesn't care HOW the predictor was
 /// produced — only that calling `predict(features)` returns the
 /// model's probabilities.
+///
+/// Pipeline:
+///
+/// 1. Load `cfg.n_seen + cfg.n_lockbox` bars from `bars_10s`.
+/// 2. Score each bar in the lockbox tail via `predictor.predict`.
+/// 3. Run the deterministic backtest with stress-multiplied costs.
+/// 4. Compute Deflated Sharpe from per-trade returns.
+/// 5. Compare against `min_n_trades`, `min_dsr`, `max_dd_bp_limit`.
+/// 6. Persist (`DELETE WHERE run_id = ? ; INSERT`) — sealed=true.
+///
+/// # Errors
+///
+/// * Insufficient bars in the DB for `cfg.instrument`.
+/// * Feature dim returned by `bar_features::recompute_last` does not
+///   match `predictor.n_features()`.
+/// * DuckDB read or write failure.
+///
+/// # Example
+///
+/// ```no_run
+/// use lockbox::{seal_lockbox, LockboxConfig};
+/// use persistence::Db;
+/// use trader::TraderParams;
+/// use inference::Predictor;
+///
+/// # fn run(db: &Db, predictor: &dyn Predictor) -> anyhow::Result<()> {
+/// let cfg = LockboxConfig {
+///     instrument: "EUR_USD".to_string(),
+///     model_id: "lgbm_v3".to_string(),
+///     params_id: "p_42".to_string(),
+///     ..Default::default()
+/// };
+/// let result = seal_lockbox(
+///     db, &cfg, &TraderParams::default(), predictor,
+///     "run-2026-04-28-EUR_USD",
+/// )?;
+/// if !result.passed {
+///     eprintln!("blocked: {:?}", result.reasons);
+/// }
+/// # Ok(()) }
+/// ```
 pub fn seal_lockbox(
     db: &Db,
     cfg: &LockboxConfig,
@@ -276,12 +337,13 @@ pub fn seal_lockbox(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bar_features::N_FEATURES;
+    use tempfile::tempdir;
 
     /// Trivial predictor for tests — always returns near-50/50 probs.
     /// Mirrors `inference::FallbackPredictor` shape but we want a
     /// stable, deterministic stand-in here without pulling its full
     /// dependency tree into the lockbox tests.
-    #[allow(dead_code)]
     struct ConstPredictor {
         n: usize,
         p_long: f64,
@@ -303,6 +365,63 @@ mod tests {
         }
     }
 
+    /// Seed `n` synthetic 10s bars for `instrument` directly into
+    /// `bars_10s`. Prices follow a deterministic mild random walk so
+    /// EWMA σ + features come out finite. Timestamps are 10s apart
+    /// ending at `base_ts_ms`.
+    fn seed_bars(db: &Db, instrument: &str, n: usize, base_ts_ms: i64) {
+        db.with_conn(|conn| {
+            let tx = conn.unchecked_transaction().unwrap();
+            for i in 0..n {
+                let ts = base_ts_ms - ((n - 1 - i) as i64) * 10_000;
+                // Deterministic wiggle around 1.10 so log-returns are nonzero.
+                let phase = (i as f64) * 0.07;
+                let close = 1.10 + 0.001 * phase.sin();
+                let open = close - 0.0001;
+                let high = close + 0.0002;
+                let low = open - 0.0002;
+                tx.execute(
+                    "INSERT INTO bars_10s
+                     (instrument, ts_ms, open, high, low, close, n_ticks, spread_bp_avg)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    duckdb::params![
+                        instrument,
+                        ts,
+                        open,
+                        high,
+                        low,
+                        close,
+                        12_i64,
+                        1.0_f64,
+                    ],
+                )
+                .unwrap();
+            }
+            tx.commit().unwrap();
+        });
+    }
+
+    fn tmp_db(label: &str) -> (Db, tempfile::TempDir) {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join(format!("{label}.duckdb"));
+        let db = Db::open(&path).expect("open db");
+        (db, dir)
+    }
+
+    fn small_cfg(model_id: &str) -> LockboxConfig {
+        LockboxConfig {
+            instrument: "EUR_USD".to_string(),
+            model_id: model_id.to_string(),
+            params_id: "p_test".to_string(),
+            n_seen: 30,
+            n_lockbox: 20,
+            cost_stress: 1.0,
+            min_n_trades: 3,
+            min_dsr: 0.50,
+            max_dd_bp_limit: 1500.0,
+        }
+    }
+
     #[test]
     fn config_defaults_are_reasonable() {
         let c = LockboxConfig::default();
@@ -314,27 +433,143 @@ mod tests {
     }
 
     #[test]
-    fn pass_logic_accepts_all_thresholds_satisfied() {
-        // Manual computation: 5 winning trades with a strong Sharpe →
-        // DSR > 0.50, n_trades >= 3, dd < limit. We exercise the
-        // pass/fail code path via direct construction since the full
-        // backtest needs a Db + bars; backtest correctness is covered
-        // in its own crate tests.
-        let cfg = LockboxConfig::default();
-        // Simulate: 5 trades all positive ⇒ no reasons.
-        let mut reasons: Vec<String> = Vec::new();
-        let n_trades = 5;
-        let dsr = 0.95;
-        let max_dd = 100.0;
-        if n_trades < cfg.min_n_trades {
-            reasons.push("n_trades".into());
-        }
-        if dsr < cfg.min_dsr {
-            reasons.push("dsr".into());
-        }
-        if max_dd > cfg.max_dd_bp_limit {
-            reasons.push("dd".into());
-        }
-        assert!(reasons.is_empty());
+    fn errors_when_db_has_insufficient_bars() {
+        // Error path: ask for 50 bars but only seed 10.
+        let (db, _t) = tmp_db("lb_short");
+        seed_bars(&db, "EUR_USD", 10, 1_700_000_000_000);
+        let cfg = small_cfg("m_short"); // needs 50 bars
+        let pred = ConstPredictor { n: N_FEATURES, p_long: 0.5 };
+        let err = seal_lockbox(
+            &db,
+            &cfg,
+            &TraderParams::default(),
+            &pred,
+            "run-short",
+        )
+        .expect_err("should fail when too few bars");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("need at least"),
+            "expected 'need at least' in error, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn fails_lockbox_with_neutral_predictor_and_writes_sealed_row() {
+        // Neutral 50/50 predictor produces no entries → n_trades=0 →
+        // blocked on min_n_trades. Result must still be sealed=true
+        // and the row must land in `lockbox_results`.
+        let (db, _t) = tmp_db("lb_neutral");
+        let cfg = small_cfg("m_neutral");
+        seed_bars(
+            &db,
+            "EUR_USD",
+            cfg.n_seen + cfg.n_lockbox + 5,
+            1_700_000_000_000,
+        );
+        let pred = ConstPredictor { n: N_FEATURES, p_long: 0.5 };
+        let res = seal_lockbox(
+            &db,
+            &cfg,
+            &TraderParams::default(),
+            &pred,
+            "run-neutral",
+        )
+        .expect("seal");
+        assert!(res.sealed);
+        assert!(!res.passed, "neutral predictor should fail min_n_trades");
+        assert!(
+            res.reasons.iter().any(|r| r.starts_with("n_trades ")),
+            "expected n_trades reason, got {:?}",
+            res.reasons,
+        );
+        // Row landed.
+        let (n, sealed): (i64, bool) = db.with_conn(|c| {
+            c.query_row(
+                "SELECT COUNT(*), MIN(sealed::INT)::BOOL
+                 FROM lockbox_results WHERE run_id = ?",
+                duckdb::params!["run-neutral"],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap()
+        });
+        assert_eq!(n, 1);
+        assert!(sealed);
+    }
+
+    #[test]
+    fn idempotent_on_run_id_overwrites_prior_row() {
+        // Happy-ish path: re-seal with the same run_id. Second call
+        // must DELETE-then-INSERT, leaving exactly one row.
+        let (db, _t) = tmp_db("lb_idem");
+        let cfg = small_cfg("m_idem");
+        seed_bars(
+            &db,
+            "EUR_USD",
+            cfg.n_seen + cfg.n_lockbox + 5,
+            1_700_000_000_000,
+        );
+        let pred = ConstPredictor { n: N_FEATURES, p_long: 0.5 };
+        let r1 = seal_lockbox(
+            &db,
+            &cfg,
+            &TraderParams::default(),
+            &pred,
+            "run-idem",
+        )
+        .expect("seal-1");
+        assert!(r1.sealed);
+
+        // is_already_sealed reflects the row.
+        assert!(is_already_sealed(&db, "run-idem").expect("already?"));
+        assert!(!is_already_sealed(&db, "run-missing").expect("missing?"));
+
+        // Second seal with same run_id should overwrite, not duplicate.
+        let r2 = seal_lockbox(
+            &db,
+            &cfg,
+            &TraderParams::default(),
+            &pred,
+            "run-idem",
+        )
+        .expect("seal-2");
+        assert!(r2.sealed);
+        let n: i64 = db.with_conn(|c| {
+            c.query_row(
+                "SELECT COUNT(*) FROM lockbox_results WHERE run_id = ?",
+                duckdb::params!["run-idem"],
+                |r| r.get(0),
+            )
+            .unwrap()
+        });
+        assert_eq!(n, 1, "DELETE-then-INSERT must keep exactly one row");
+    }
+
+    #[test]
+    fn errors_on_predictor_feature_dim_mismatch() {
+        // Error path: predictor declares fewer features than recompute_last
+        // returns → the dim-check should bail immediately.
+        let (db, _t) = tmp_db("lb_dim");
+        let cfg = small_cfg("m_dim");
+        seed_bars(
+            &db,
+            "EUR_USD",
+            cfg.n_seen + cfg.n_lockbox + 5,
+            1_700_000_000_000,
+        );
+        let bad_pred = ConstPredictor { n: 7, p_long: 0.5 }; // not 24
+        let err = seal_lockbox(
+            &db,
+            &cfg,
+            &TraderParams::default(),
+            &bad_pred,
+            "run-dim",
+        )
+        .expect_err("dim mismatch must fail");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("feature dim mismatch"),
+            "unexpected error: {msg}"
+        );
     }
 }

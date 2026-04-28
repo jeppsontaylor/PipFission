@@ -68,6 +68,30 @@ impl RunTracker {
     /// Begin tracking. Inserts a row with `status='running'`. Returns
     /// the tracker even if the DB was unavailable; `started_ok=false`
     /// in that case and the finalisers will silently no-op.
+    ///
+    /// `command` is the high-level pipeline stage name (e.g.
+    /// `"label"`, `"train.side"`, `"pipeline.full"`). `instrument`
+    /// is optional — top-level orchestrator runs that span all
+    /// instruments pass `None`. `args_json` is captured verbatim into
+    /// the row so the dashboard can replay parameters.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use observability::RunTracker;
+    /// use persistence::Db;
+    ///
+    /// # fn run(db: &Db) {
+    /// let tracker = RunTracker::start(
+    ///     db,
+    ///     "label",
+    ///     Some("EUR_USD"),
+    ///     &serde_json::json!({ "n_bars": 1000 }),
+    /// );
+    /// // ... do work ...
+    /// tracker.success(db);
+    /// # }
+    /// ```
     pub fn start(
         db: &Db,
         command: &str,
@@ -98,6 +122,23 @@ impl RunTracker {
         }
     }
 
+    /// Finalise the run as `success`. Updates `ts_finished_ms`,
+    /// `elapsed_ms`, and flips `status` to `success`. No-op when the
+    /// initial start INSERT failed (`started_ok == false`).
+    ///
+    /// Errors during the UPDATE are logged at WARN and swallowed —
+    /// observability must not block real work.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # use observability::RunTracker;
+    /// # use persistence::Db;
+    /// # fn run(db: &Db) {
+    /// let t = RunTracker::start(db, "lockbox", None, &serde_json::json!({}));
+    /// t.success(db);
+    /// # }
+    /// ```
     pub fn success(&self, db: &Db) {
         if !self.started_ok {
             return;
@@ -111,6 +152,20 @@ impl RunTracker {
         }
     }
 
+    /// Finalise the run as `failed`. Stores `error_msg` in the
+    /// `error_msg` column for the dashboard to surface. No-op when
+    /// the initial start INSERT failed.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # use observability::RunTracker;
+    /// # use persistence::Db;
+    /// # fn run(db: &Db) {
+    /// let t = RunTracker::start(db, "train.side", None, &serde_json::json!({}));
+    /// t.fail(db, "model didn't converge");
+    /// # }
+    /// ```
     pub fn fail(&self, db: &Db, error_msg: &str) {
         if !self.started_ok {
             return;
@@ -223,5 +278,88 @@ mod tests {
         });
         assert_eq!(row.0, "failed");
         assert_eq!(row.1.as_deref(), Some("boom"));
+    }
+
+    #[test]
+    fn start_persists_args_json_and_running_status() {
+        // Edge: the row should be visible with status='running' and
+        // args_json round-tripped before any finaliser is called.
+        let (db, _, _t) = tmp_db("obs_running");
+        let args = serde_json::json!({"side_trials": 12, "labels": ["a", "b"]});
+        let t = RunTracker::start(&db, "pipeline.full", Some("EUR_USD"), &args);
+        assert!(t.started_ok);
+
+        let (status, command, instrument, args_str): (
+            String,
+            String,
+            Option<String>,
+            String,
+        ) = db.with_conn(|c| {
+            c.query_row(
+                "SELECT status, command, instrument, args_json
+                 FROM pipeline_runs WHERE run_id = ?",
+                duckdb::params![t.run_id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )
+            .unwrap()
+        });
+        assert_eq!(status, "running");
+        assert_eq!(command, "pipeline.full");
+        assert_eq!(instrument.as_deref(), Some("EUR_USD"));
+        let parsed: serde_json::Value =
+            serde_json::from_str(&args_str).expect("args_json round-trip");
+        assert_eq!(parsed["side_trials"], 12);
+        assert_eq!(parsed["labels"][0], "a");
+    }
+
+    #[test]
+    fn finalisers_noop_when_started_ok_is_false() {
+        // Error path: hand-construct a tracker with started_ok=false
+        // (mirrors what start() does when the DB INSERT fails) and
+        // verify success/fail don't panic and don't touch the DB.
+        let (db, _, _t) = tmp_db("obs_noop");
+        let t = RunTracker {
+            run_id: "ghost".to_string(),
+            started_ms: 1_700_000_000_000,
+            command: "label".to_string(),
+            instrument: None,
+            started_ok: false,
+        };
+        // Neither call should error; both should be no-ops.
+        t.success(&db);
+        t.fail(&db, "ignored");
+
+        let count: i64 = db.with_conn(|c| {
+            c.query_row(
+                "SELECT COUNT(*) FROM pipeline_runs WHERE run_id = 'ghost'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap()
+        });
+        assert_eq!(count, 0, "finalisers must not insert when started_ok=false");
+    }
+
+    #[test]
+    fn elapsed_ms_is_non_negative_after_success() {
+        let (db, _, _t) = tmp_db("obs_elapsed");
+        let t = RunTracker::start(
+            &db,
+            "label",
+            Some("USD_JPY"),
+            &serde_json::json!({}),
+        );
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        t.success(&db);
+        let elapsed: Option<i64> = db.with_conn(|c| {
+            c.query_row(
+                "SELECT elapsed_ms FROM pipeline_runs WHERE run_id = ?",
+                duckdb::params![t.run_id],
+                |r| r.get(0),
+            )
+            .unwrap()
+        });
+        let elapsed = elapsed.expect("elapsed_ms populated on success");
+        assert!(elapsed >= 0, "elapsed_ms must be non-negative, got {elapsed}");
     }
 }
