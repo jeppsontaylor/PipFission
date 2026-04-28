@@ -13,3 +13,4 @@
 {"action":"skip","instrument":"ETH/USD","model_id":"side_lgbm_1777266562_dba25f","params_id":"params_side_lgbm_1777266562_dba25f_987d870f","price":2272.49,"realized_r":null,"reason":"below_threshold","ts_ms":1777358730000,"v":"v1.0.1"}
 {"action":"skip","instrument":"ETH/USD","model_id":"side_lgbm_1777266562_dba25f","params_id":"params_side_lgbm_1777266562_dba25f_987d870f","price":2273.485,"realized_r":null,"reason":"below_threshold","ts_ms":1777358750000,"v":"v1.0.1"}
 {"action":"skip","instrument":"ETH/USD","model_id":"side_lgbm_1777266562_dba25f","params_id":"params_side_lgbm_1777266562_dba25f_987d870f","price":2272.0245,"realized_r":null,"reason":"below_threshold","ts_ms":1777358900000,"v":"v1.0.1"}
+{"action":"skip","instrument":"ETH/USD","model_id":"side_lgbm_1777266562_dba25f","params_id":"params_side_lgbm_1777266562_dba25f_987d870f","price":2274.1549999999997,"realized_r":null,"reason":"below_threshold","ts_ms":1777358990000,"v":"v1.0.1"}
