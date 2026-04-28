@@ -1,0 +1,24 @@
+[package]
+name = "lockbox"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Single-shot lockbox holdout: scores a sealed-slice via the live ONNX inference path, runs the deterministic Rust backtest, computes DSR, and persists a sealed lockbox_results row. Pure-Rust port of research/lockbox/gate.py."
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+anyhow = { workspace = true }
+duckdb = { workspace = true }
+tracing = { workspace = true }
+market-domain = { workspace = true }
+persistence = { workspace = true }
+trader = { workspace = true }
+backtest = { workspace = true }
+metrics = { workspace = true }
+inference = { workspace = true }
+bar-features = { workspace = true }
+labeling = { workspace = true }

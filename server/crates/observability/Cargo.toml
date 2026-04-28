@@ -1,0 +1,21 @@
+[package]
+name = "observability"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Pipeline-run tracking + JSONL log writer. Inserts/updates `pipeline_runs` rows around any unit of orchestrated work. Pure Rust port of research/observability/tracker.py."
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+anyhow = { workspace = true }
+uuid = { version = "1", features = ["v4"] }
+duckdb = { workspace = true }
+tracing = { workspace = true }
+persistence = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

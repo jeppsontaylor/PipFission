@@ -15,9 +15,7 @@ use std::io::{self, Read};
 use anyhow::{Context, Result};
 use serde::Deserialize;
 
-use labeling::{
-    cusum_filter, ewma_volatility, optimise_labels, triple_barrier, BarrierConfig, LabelOptimiserConfig, LabelRow,
-};
+use labeling::{run_label_pipeline, LabelPipelineConfig};
 use market_domain::Bar10s;
 
 #[derive(Deserialize)]
@@ -109,37 +107,27 @@ fn main() -> Result<()> {
     let req: Request = serde_json::from_str(&buf).context("parse request JSON")?;
     let bars: Vec<Bar10s> = req.bars.into_iter().map(Into::into).collect();
 
-    let sigma = ewma_volatility(&bars, req.cfg.sigma_span);
-    let events = cusum_filter(&bars, &sigma, req.cfg.cusum_h_mult);
-
-    let bar_cfg = BarrierConfig {
+    // Delegate to the library function — single source of truth for
+    // the labelling pipeline so a Rust orchestrator and this CLI emit
+    // identical labels for identical inputs.
+    let cfg = LabelPipelineConfig {
+        sigma_span: req.cfg.sigma_span,
+        cusum_h_mult: req.cfg.cusum_h_mult,
+        min_gap: req.cfg.min_gap,
         pt_atr: req.cfg.pt_atr,
         sl_atr: req.cfg.sl_atr,
         vert_horizon: req.cfg.vert_horizon,
         min_edge: req.cfg.min_edge,
-    };
-    let raw_labels: Vec<LabelRow> = triple_barrier(&bars, &sigma, &events, &bar_cfg);
-
-    let opt_cfg = LabelOptimiserConfig {
         min_hold_ms: req.cfg.min_hold_ms,
         max_hold_ms: req.cfg.max_hold_ms,
-        min_edge: req.cfg.min_edge,
         downside_lambda: req.cfg.downside_lambda,
         turnover_cost: req.cfg.turnover_cost,
         min_minority_frac: req.cfg.min_minority_frac,
     };
-    let chosen = optimise_labels(&raw_labels, &opt_cfg);
+    let out = run_label_pipeline(&bars, &cfg);
 
     let stdout = io::stdout();
     let mut h = stdout.lock();
-    serde_json::to_writer(
-        &mut h,
-        &serde_json::json!({
-            "n_bars": bars.len(),
-            "n_events": events.len(),
-            "n_raw_labels": raw_labels.len(),
-            "labels": chosen,
-        }),
-    )?;
+    serde_json::to_writer(&mut h, &out)?;
     Ok(())
 }
