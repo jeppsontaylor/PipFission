@@ -455,7 +455,16 @@ def _persist_candidates_table(
     constraint on (run_id, spec_name) makes this idempotent across
     crash-recovery."""
     with rw_conn() as c:
+        # Idempotency via DELETE-then-INSERT under the unique
+        # (run_id, spec_name) key. DuckDB's ON CONFLICT requires the
+        # target to be backed by an explicit index, and the schema's
+        # UNIQUE constraint isn't always picked up; this pattern is
+        # equivalent and version-stable.
         for cand in candidates:
+            c.execute(
+                "DELETE FROM model_candidates WHERE run_id = ? AND spec_name = ?",
+                [run_id, cand.spec_name],
+            )
             c.execute(
                 """
                 INSERT INTO model_candidates
@@ -463,7 +472,6 @@ def _persist_candidates_table(
                    oos_auc, oos_log_loss, oos_brier, oos_balanced_acc,
                    n_train, n_oof, is_winner)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(run_id, spec_name) DO NOTHING
                 """,
                 [
                     run_id, cand.spec_name, cand.model_id, instrument, ts_ms,
@@ -566,6 +574,7 @@ def train_side(cfg: SideTrainConfig) -> SideTrainResult:
     # Headline model_metrics row mirrors winner's stats — keeps the
     # existing `/api/model/metrics` consumer working unchanged.
     with rw_conn() as c:
+        c.execute("DELETE FROM model_metrics WHERE model_id = ?", [winner.model_id])
         c.execute(
             """
             INSERT INTO model_metrics
@@ -574,7 +583,6 @@ def train_side(cfg: SideTrainConfig) -> SideTrainResult:
                train_sharpe, train_sortino, max_train_sortino, max_train_sharpe,
                n_train, n_oof)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(model_id) DO NOTHING
             """,
             [
                 winner.model_id, cfg.instrument, ts_ms,

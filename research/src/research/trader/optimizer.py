@@ -289,6 +289,7 @@ def fine_tune_trader(cfg: TraderFineTuneConfig) -> dict[str, Any]:
 
     params_id = f"params_{cfg.model_id}_{uuid.uuid4().hex[:8]}"
     with rw_conn() as c:
+        c.execute("DELETE FROM trader_metrics WHERE params_id = ?", [params_id])
         c.execute(
             """
             INSERT INTO trader_metrics
@@ -296,7 +297,6 @@ def fine_tune_trader(cfg: TraderFineTuneConfig) -> dict[str, Any]:
                fine_tune_sharpe, fine_tune_sortino, max_dd_bp, turnover_per_day,
                hit_rate, profit_factor, n_trades, params_json)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(params_id) DO NOTHING
             """,
             [
                 params_id,

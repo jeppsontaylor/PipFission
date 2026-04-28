@@ -11,7 +11,10 @@ description = "Subscribes to Event::Bar10s, runs the inference registry on close
 market-domain = { workspace = true }
 inference = { workspace = true }
 bar-features = { workspace = true }
+live-trader = { workspace = true }
 serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
 chrono = { workspace = true }
 tokio = { workspace = true }
 parking_lot = { workspace = true }

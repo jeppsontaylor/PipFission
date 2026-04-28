@@ -178,12 +178,12 @@ def seal_lockbox(cfg: LockboxConfig, run_id: Optional[str] = None) -> LockboxRes
     sealed_summary["cost_stress"] = cfg.cost_stress
 
     with rw_conn() as c:
+        c.execute("DELETE FROM lockbox_results WHERE run_id = ?", [rid])
         c.execute(
             """
             INSERT INTO lockbox_results
               (run_id, ts_ms, model_id, params_id, summary_json, sealed)
             VALUES (?, ?, ?, ?, ?, ?)
-            ON CONFLICT(run_id) DO NOTHING
             """,
             [
                 rid,

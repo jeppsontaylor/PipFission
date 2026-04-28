@@ -171,6 +171,10 @@ def persist_gate_result(result: GateResult) -> None:
     rather than an error."""
     with rw_conn() as conn:
         conn.execute(
+            "DELETE FROM model_deployment_gate WHERE model_id = ?",
+            [result.model_id],
+        )
+        conn.execute(
             """
             INSERT INTO model_deployment_gate
               (model_id, instrument, ts_ms, oos_auc, oos_log_loss,
@@ -178,7 +182,6 @@ def persist_gate_result(result: GateResult) -> None:
                fine_tune_max_dd_bp, passed_gate, blocked_reasons,
                gate_thresholds_json)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(model_id) DO NOTHING
             """,
             [
                 result.model_id, result.instrument, result.ts_ms,

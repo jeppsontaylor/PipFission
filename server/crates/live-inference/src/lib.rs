@@ -24,7 +24,7 @@ use dashmap::DashMap;
 use parking_lot::Mutex;
 use tokio::sync::broadcast;
 
-use bar_features::{recompute_last, N_FEATURES};
+use bar_features::{recompute_last, FEATURE_NAMES, N_FEATURES};
 use inference::{Predictor, PredictorRegistry};
 use market_domain::{Bar10s, Bar10sNamed, ChampionSignal, Event, FEATURE_DIM};
 
@@ -123,10 +123,67 @@ fn on_bar(
         p_short: probs.p_short,
         p_take: probs.p_take,
         calibrated: probs.calibrated,
-        model_id: id,
-        kind,
+        model_id: id.clone(),
+        kind: kind.clone(),
     };
     let _ = bus.send(Event::ChampionSignal(signal));
+
+    // Append the per-bar feature vector + champion output to the
+    // agent-readable JSONL preview. Failures are logged + swallowed;
+    // this is a review artifact, not load-bearing.
+    if let Err(e) = write_features_jsonl(&named, &feat, probs, &id, &kind) {
+        tracing::debug!(error = %e, "live-inference: features.jsonl append failed");
+    }
+}
+
+/// Top-level dir used for `trade_logs/<v>/<ticker>/features.jsonl`.
+/// Matches `live-trader`'s convention.
+fn trade_logs_root() -> std::path::PathBuf {
+    std::env::var("TRADE_LOGS_DIR")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| std::path::PathBuf::from("./trade_logs"))
+}
+
+const RELEASE_VERSION: &str = env!("CARGO_PKG_VERSION");
+
+fn write_features_jsonl(
+    bar: &Bar10sNamed,
+    feat: &[f64],
+    probs: inference::Probs,
+    model_id: &str,
+    kind: &str,
+) -> anyhow::Result<()> {
+    use serde_json::json;
+    // Round to 5 decimals to keep the line short. Pair each feature
+    // with its name so an agent can read it without referring to the
+    // schema.
+    let named: serde_json::Map<String, serde_json::Value> = FEATURE_NAMES
+        .iter()
+        .zip(feat.iter())
+        .map(|(name, value)| {
+            (
+                (*name).to_string(),
+                serde_json::Value::from((value * 100_000.0).round() / 100_000.0),
+            )
+        })
+        .collect();
+    let record = json!({
+        "v": format!("v{RELEASE_VERSION}"),
+        "instrument": bar.instrument,
+        "ts_ms": bar.ts_ms,
+        "close": bar.close,
+        "n_ticks": bar.n_ticks,
+        "spread_bp_avg": bar.spread_bp_avg,
+        "model_id": model_id,
+        "kind": kind,
+        "p_long": probs.p_long,
+        "p_short": probs.p_short,
+        "calibrated": probs.calibrated,
+        "features": serde_json::Value::Object(named),
+    });
+    let safe_inst = bar.instrument.replace('/', "_");
+    let sub = format!("{safe_inst}/features.jsonl");
+    live_trader::jsonl_log::append(&trade_logs_root(), RELEASE_VERSION, &sub, &record)
 }
 
 fn bar_close_to_datetime(ts_ms: i64) -> DateTime<Utc> {

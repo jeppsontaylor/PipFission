@@ -62,12 +62,12 @@ def write_manifest(
     (live_dir / "manifest.json").write_text(json.dumps(manifest, indent=2))
 
     with rw_conn() as c:
+        c.execute("DELETE FROM model_artifacts WHERE model_id = ?", [model_id])
         c.execute(
             """
             INSERT INTO model_artifacts
               (model_id, ts_ms, kind, version, onnx_blob, sha256, calib_json)
             VALUES (?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(model_id) DO NOTHING
             """,
             [
                 model_id,
