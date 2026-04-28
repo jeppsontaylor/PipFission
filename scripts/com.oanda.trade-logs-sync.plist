@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+  <dict>
+    <key>Label</key>
+    <string>com.oanda.trade-logs-sync</string>
+
+    <!-- Periodically commit + push trade_logs/ so the live api-server's
+         JSONL appends don't drift the worktree out of sync with origin.
+         30 min cadence — frequent enough to keep the remote useful for
+         agent review, light enough not to spam the commit log. -->
+    <key>ProgramArguments</key>
+    <array>
+      <string>/Users/bentaylor/Code/oanda/scripts/sync_trade_logs.sh</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/bentaylor/Code/oanda</string>
+
+    <key>StartInterval</key>
+    <integer>1800</integer>
+
+    <!-- Run once at load so the first sync happens immediately. -->
+    <key>RunAtLoad</key>
+    <true/>
+
+    <!-- launchd doesn't inherit shell PATH; git + ssh-agent socket need
+         to be reachable for the push. -->
+    <key>EnvironmentVariables</key>
+    <dict>
+      <key>PATH</key>
+      <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+      <key>SSH_AUTH_SOCK</key>
+      <string>/private/tmp/com.apple.launchd.ssh-agent/Listeners</string>
+    </dict>
+
+    <!-- Capture stdout / stderr for forensic review of failed syncs. -->
+    <key>StandardOutPath</key>
+    <string>/Users/bentaylor/Code/oanda/data/logs/server/trade-logs-sync.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/bentaylor/Code/oanda/data/logs/server/trade-logs-sync.err.log</string>
+
+    <!-- Background tier — don't compete with the api-server for CPU. -->
+    <key>ProcessType</key>
+    <string>Background</string>
+  </dict>
+</plist>
