@@ -205,38 +205,34 @@ pub async fn spawn_pipeline_subprocess(
         PipelineSpawnError::LogFile(format!("could not clone log file: {e}"))
     })?;
 
-    // Build the command line. The orchestrator CLI is invoked as
-    // `python -m research pipeline run --instrument X [--n-bars N ...]`.
-    let mut cmd = tokio::process::Command::new(&cfg.python_bin);
-    cmd.arg("-m")
-        .arg("research")
-        .arg("pipeline")
-        .arg("run")
-        .arg("--instrument")
+    // Spawn the Rust pipeline-orchestrator binary. It owns the staged
+    // pipeline (label → train → finetune → lockbox → gate → export)
+    // and only shells out to Python for the ML steps. Replaced the
+    // legacy `python -m research pipeline run` direct spawn.
+    let orchestrator = cfg
+        .working_dir
+        .join("server/target/release/pipeline-orchestrator");
+    let mut cmd = tokio::process::Command::new(&orchestrator);
+    cmd.arg("--instrument")
         .arg(&request.instrument)
         .current_dir(&cfg.working_dir)
         .stdout(Stdio::from(stdout_file))
         .stderr(Stdio::from(stderr_file))
         .stdin(Stdio::null());
-    if let Some(n) = request.n_bars {
-        cmd.arg("--n-bars").arg(n.to_string());
-    }
     if let Some(n) = request.n_optuna_trials {
         cmd.arg("--side-trials").arg(n.to_string());
     }
     if let Some(n) = request.n_trader_trials {
         cmd.arg("--trader-trials").arg(n.to_string());
     }
-    if let Some(s) = request.seed {
-        cmd.arg("--seed").arg(s.to_string());
-    }
+    // pipeline-orchestrator doesn't currently expose --n-bars or
+    // --seed; those flow through env / defaults.
 
     let mut child = cmd.spawn().map_err(|e| {
         state.pipeline_flight.release(&run_id);
         PipelineSpawnError::SpawnFailed(format!(
-            "failed to spawn `{} -m research pipeline run`: {e}. \
-             Confirm PIPELINE_PYTHON_BIN points at a venv with research/ installed.",
-            cfg.python_bin.display()
+            "failed to spawn `{}`: {e}. Build it with `cargo build --release -p pipeline-orchestrator`.",
+            orchestrator.display()
         ))
     })?;
 

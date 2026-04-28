@@ -9,7 +9,6 @@ from research.cli import (
     finetune_cmd,
     label_cmd,
     lockbox_cmd,
-    pipeline_cmd,
     train_cmd,
 )
 
@@ -24,7 +23,10 @@ app.add_typer(train_cmd.app, name="train", help="Train the side classifier with 
 app.add_typer(finetune_cmd.app, name="finetune", help="NSGA-II trader optimiser on the next 100 bars.")
 app.add_typer(lockbox_cmd.app, name="lockbox", help="Single-shot 100-bar lockbox gate.")
 app.add_typer(export_cmd.app, name="export", help="Export champion to ONNX + manifest.")
-app.add_typer(pipeline_cmd.app, name="pipeline", help="One-shot full retrain (label → train → finetune → lockbox → export).")
+# `pipeline` subcommand removed — the orchestrator is now the Rust
+# binary `server/target/release/pipeline-orchestrator`. Each step
+# (label / train / finetune / lockbox / export) is a separate CLI here
+# and they thread IDs via --json-out files.
 
 
 @app.command("init-schema")
