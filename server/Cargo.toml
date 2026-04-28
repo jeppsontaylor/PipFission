@@ -22,6 +22,7 @@ members = [
     "crates/deploy-gate",
     "crates/lockbox",
     "crates/observability",
+    "crates/pipeline-orchestrator",
 ]
 default-members = ["crates/api-server"]
 

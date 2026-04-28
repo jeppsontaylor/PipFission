@@ -1,0 +1,26 @@
+[package]
+name = "pipeline-orchestrator"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Rust binary that orchestrates a full retrain run: starts a RunTracker, spawns the Python ML core (`python -m research pipeline run`), and on completion writes training_log/deployment_gate/champion_changes JSONL artifacts from the persisted DB rows. Replaces direct invocation of the Python CLI from the supervisor."
+
+[[bin]]
+name = "pipeline-orchestrator"
+path = "src/main.rs"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+anyhow = { workspace = true }
+duckdb = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+clap = { version = "4", features = ["derive"] }
+persistence = { workspace = true }
+observability = { workspace = true }
+deploy-gate = { workspace = true }
+live-trader = { workspace = true }

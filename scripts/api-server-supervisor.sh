@@ -76,8 +76,10 @@ while true; do
       [ -z "$INST" ] && continue
       RUN_LOG="$PIPELINE_LOG_DIR/supervisor-$(date -u '+%Y%m%dT%H%M%SZ')-$INST.log"
       echo "[supervisor] $(date -u '+%Y-%m-%dT%H:%M:%SZ') retraining $INST → $RUN_LOG" >> "$SUPERVISOR_LOG"
-      cd "$REPO/research"
-      ../.venv/bin/python -m research pipeline run \
+      # Rust orchestrator wraps the python ML core so observability
+      # tracking + JSONL artifacts are owned by Rust. The orchestrator
+      # spawns python -m research pipeline run internally.
+      ./server/target/release/pipeline-orchestrator \
           --instrument "$INST" \
           --side-trials "${SIDE_TRIALS:-12}" \
           --trader-trials "${TRADER_TRIALS:-20}" \
@@ -85,7 +87,6 @@ while true; do
           > "$RUN_LOG" 2>&1
       RC=$?
       echo "[supervisor] $(date -u '+%Y-%m-%dT%H:%M:%SZ') $INST pipeline exit $RC" >> "$SUPERVISOR_LOG"
-      cd "$REPO"
 
       # Post-pipeline: loosen the live TraderParams. The Optuna trader
       # optimiser tends to pick unworkable thresholds (long_threshold
