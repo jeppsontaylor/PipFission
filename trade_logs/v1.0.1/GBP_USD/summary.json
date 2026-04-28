@@ -1,0 +1,28 @@
+{
+  "avg_loss": -9.814735301543028e-6,
+  "avg_win": 0.000016738368988584223,
+  "by_exit_reason": {
+    "stop_loss": 7,
+    "take_profit": 5,
+    "trailing_stop": 10
+  },
+  "cum_r": 0.000023053761977198658,
+  "current_model_id": "side_lgbm_1777401438_5e7a5e",
+  "expectancy_per_trade": 1.047898271690848e-6,
+  "hit_rate": 0.4090909090909091,
+  "instrument": "GBP_USD",
+  "latest_action": "(none)",
+  "latest_close": 1.35217,
+  "latest_p_long": 0.5392438769340515,
+  "latest_p_short": 0.4607561230659485,
+  "latest_trade_ts_ms": 1777403630000,
+  "losses": 13,
+  "max_drawdown_bp": 0.3604325256664463,
+  "n_trades": 22,
+  "profit_factor": 1.1806840685412634,
+  "sharpe_per_trade": 0.0629432462709704,
+  "sortino_per_trade": 0.10399738572403369,
+  "summary_updated_ms": 1777417108207,
+  "v": "v1.0.1",
+  "wins": 9
+}

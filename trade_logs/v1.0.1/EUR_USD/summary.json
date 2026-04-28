@@ -1,0 +1,28 @@
+{
+  "avg_loss": -5.965696591987828e-6,
+  "avg_win": 0.00010590576410890767,
+  "by_exit_reason": {
+    "stop_loss": 4,
+    "take_profit": 5,
+    "trailing_stop": 13
+  },
+  "cum_r": 0.0010993407426861182,
+  "current_model_id": "side_lgbm_1777401438_5e7a5e",
+  "expectancy_per_trade": 0.00004997003375845992,
+  "hit_rate": 0.5,
+  "instrument": "EUR_USD",
+  "latest_action": "(none)",
+  "latest_close": 1.171565,
+  "latest_p_long": 0.5392438769340515,
+  "latest_p_short": 0.4607561230659485,
+  "latest_trade_ts_ms": 1777403600000,
+  "losses": 11,
+  "max_drawdown_bp": 0.2776163674748103,
+  "n_trades": 22,
+  "profit_factor": 17.75245563965546,
+  "sharpe_per_trade": 0.23024556397158338,
+  "sortino_per_trade": 9.87333013019194,
+  "summary_updated_ms": 1777417108222,
+  "v": "v1.0.1",
+  "wins": 11
+}

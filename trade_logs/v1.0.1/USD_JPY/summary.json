@@ -1,0 +1,28 @@
+{
+  "avg_loss": -5.212498547302324e-6,
+  "avg_win": 8.949664962084233e-6,
+  "by_exit_reason": {
+    "stop_loss": 4,
+    "take_profit": 4,
+    "trailing_stop": 14
+  },
+  "cum_r": 0.000055270994071987545,
+  "current_model_id": "side_lgbm_1777401438_5e7a5e",
+  "expectancy_per_trade": 2.5123179123630703e-6,
+  "hit_rate": 0.5454545454545454,
+  "instrument": "USD_JPY",
+  "latest_action": "(none)",
+  "latest_close": 159.5865,
+  "latest_p_long": 0.5230204463005066,
+  "latest_p_short": 0.4769795536994934,
+  "latest_trade_ts_ms": 1777403630000,
+  "losses": 10,
+  "max_drawdown_bp": 0.17701449464770563,
+  "n_trades": 22,
+  "profit_factor": 2.0603550978559504,
+  "sharpe_per_trade": 0.282565077774599,
+  "sortino_per_trade": 0.5966981374949701,
+  "summary_updated_ms": 1777417108192,
+  "v": "v1.0.1",
+  "wins": 12
+}

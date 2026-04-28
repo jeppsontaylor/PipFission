@@ -1,0 +1,28 @@
+{
+  "avg_loss": -0.000020641700428227138,
+  "avg_win": 0.000029546712182397055,
+  "by_exit_reason": {
+    "stop_loss": 5,
+    "take_profit": 4,
+    "trailing_stop": 4
+  },
+  "cum_r": 0.000032788370096792356,
+  "current_model_id": "side_lgbm_1777401438_5e7a5e",
+  "expectancy_per_trade": 2.5221823151378738e-6,
+  "hit_rate": 0.46153846153846156,
+  "instrument": "NZD_USD",
+  "latest_action": "(none)",
+  "latest_close": 0.58855,
+  "latest_p_long": 0.4838370084762573,
+  "latest_p_short": 0.5161629915237427,
+  "latest_trade_ts_ms": 1777403550000,
+  "losses": 7,
+  "max_drawdown_bp": 0.7226062924073884,
+  "n_trades": 13,
+  "profit_factor": 1.2269218510973536,
+  "sharpe_per_trade": 0.08357223931250565,
+  "sortino_per_trade": 0.1469928657331361,
+  "summary_updated_ms": 1777417108230,
+  "v": "v1.0.1",
+  "wins": 6
+}

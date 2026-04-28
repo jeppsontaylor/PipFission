@@ -1,0 +1,28 @@
+{
+  "avg_loss": -0.000010770630623863869,
+  "avg_win": 0.000021433012028758214,
+  "by_exit_reason": {
+    "stop_loss": 6,
+    "take_profit": 4,
+    "trailing_stop": 11
+  },
+  "cum_r": -7.577445327866511e-7,
+  "current_model_id": "side_lgbm_1777401438_5e7a5e",
+  "expectancy_per_trade": -3.608307298984053e-8,
+  "hit_rate": 0.3333333333333333,
+  "instrument": "USD_CAD",
+  "latest_action": "(none)",
+  "latest_close": 1.368155,
+  "latest_p_long": 0.4936691224575043,
+  "latest_p_short": 0.5063308775424957,
+  "latest_trade_ts_ms": 1777403650000,
+  "losses": 14,
+  "max_drawdown_bp": 0.723268064134349,
+  "n_trades": 21,
+  "profit_factor": 0.9949747966135948,
+  "sharpe_per_trade": -0.002017264152857618,
+  "sortino_per_trade": -0.0034386991397720545,
+  "summary_updated_ms": 1777417108201,
+  "v": "v1.0.1",
+  "wins": 7
+}

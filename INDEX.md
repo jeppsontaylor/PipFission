@@ -6,6 +6,14 @@ recommended read order.
 
 ## 1. Operator briefing
 
+- **[`trade_logs/v1.0.1/PERFORMANCE.md`](trade_logs/v1.0.1/PERFORMANCE.md)** —
+  **portfolio P&L at a glance**. Total trades, cum R, Sharpe, Sortino,
+  max drawdown, profit factor, per-instrument breakdown table, last 10
+  trades across all tickers, exit-reason histogram. Auto-rendered after
+  every trade close. **Start here if the question is "is the system
+  making money?"**
+- **[`trade_logs/v1.0.1/portfolio_summary.json`](trade_logs/v1.0.1/portfolio_summary.json)** —
+  the same data as a machine-readable object.
 - **[`STATUS.md`](STATUS.md)** — what the system is doing **right
   now**: live champion, current trader params, what was fixed last,
   what's still open. Updated by the human + agent at the end of each

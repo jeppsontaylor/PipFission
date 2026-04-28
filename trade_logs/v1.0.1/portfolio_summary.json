@@ -1,0 +1,112 @@
+{
+  "avg_loss": -0.000012043728062392943,
+  "avg_win": 0.00003376582891623898,
+  "by_exit_reason": {
+    "stop_loss": 39,
+    "take_profit": 30,
+    "trailing_stop": 67
+  },
+  "by_model_kind": {
+    "lgbm": 135,
+    "lgbm-onnx": 1
+  },
+  "cum_r": 0.0012938646301470028,
+  "expectancy_per_trade": 9.513710515786785e-6,
+  "hit_rate": 0.47058823529411764,
+  "latest_action_overall": {
+    "action": "(none)",
+    "instrument": "USD_CAD",
+    "model_id": "side_lgbm_1777401438_5e7a5e",
+    "ts_ms": 1777403650000
+  },
+  "latest_trade_ts_ms": 1777403650000,
+  "losses": 72,
+  "max_drawdown_bp": 1.0419253758938054,
+  "n_instruments": 7,
+  "n_trades": 136,
+  "per_instrument": [
+    {
+      "cum_r": 0.0010993407426861182,
+      "hit_rate": 0.5,
+      "instrument": "EUR_USD",
+      "losses": 11,
+      "max_drawdown_bp": 0.2776163674748103,
+      "n_trades": 22,
+      "sharpe_per_trade": 0.23024556397158338,
+      "sortino_per_trade": 9.87333013019194,
+      "wins": 11
+    },
+    {
+      "cum_r": 0.00011108722632491297,
+      "hit_rate": 0.625,
+      "instrument": "USD_CHF",
+      "losses": 6,
+      "max_drawdown_bp": 0.7206858334614551,
+      "n_trades": 16,
+      "sharpe_per_trade": 0.28922732154387193,
+      "sortino_per_trade": 0.49261673810825973,
+      "wins": 10
+    },
+    {
+      "cum_r": 0.000055270994071987545,
+      "hit_rate": 0.5454545454545454,
+      "instrument": "USD_JPY",
+      "losses": 10,
+      "max_drawdown_bp": 0.17701449464770563,
+      "n_trades": 22,
+      "sharpe_per_trade": 0.282565077774599,
+      "sortino_per_trade": 0.5966981374949701,
+      "wins": 12
+    },
+    {
+      "cum_r": 0.000032788370096792356,
+      "hit_rate": 0.46153846153846156,
+      "instrument": "NZD_USD",
+      "losses": 7,
+      "max_drawdown_bp": 0.7226062924073884,
+      "n_trades": 13,
+      "sharpe_per_trade": 0.08357223931250565,
+      "sortino_per_trade": 0.1469928657331361,
+      "wins": 6
+    },
+    {
+      "cum_r": 0.000023053761977198658,
+      "hit_rate": 0.4090909090909091,
+      "instrument": "GBP_USD",
+      "losses": 13,
+      "max_drawdown_bp": 0.3604325256664463,
+      "n_trades": 22,
+      "sharpe_per_trade": 0.0629432462709704,
+      "sortino_per_trade": 0.10399738572403369,
+      "wins": 9
+    },
+    {
+      "cum_r": -7.577445327866511e-7,
+      "hit_rate": 0.3333333333333333,
+      "instrument": "USD_CAD",
+      "losses": 14,
+      "max_drawdown_bp": 0.723268064134349,
+      "n_trades": 21,
+      "sharpe_per_trade": -0.002017264152857618,
+      "sortino_per_trade": -0.0034386991397720545,
+      "wins": 7
+    },
+    {
+      "cum_r": -0.000026918720477220326,
+      "hit_rate": 0.45,
+      "instrument": "AUD_USD",
+      "losses": 11,
+      "max_drawdown_bp": 1.214858261086327,
+      "n_trades": 20,
+      "sharpe_per_trade": -0.06321698686990027,
+      "sortino_per_trade": -0.09090207714955573,
+      "wins": 9
+    }
+  ],
+  "profit_factor": 2.4920913185916413,
+  "sharpe_per_trade": 0.10661956497307574,
+  "sortino_per_trade": 0.8537055967120107,
+  "summary_updated_ms": 1777417108239,
+  "v": "v1.0.1",
+  "wins": 64
+}

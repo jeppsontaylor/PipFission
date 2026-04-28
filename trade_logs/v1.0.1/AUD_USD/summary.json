@@ -1,0 +1,28 @@
+{
+  "avg_loss": -0.000018176871789056147,
+  "avg_win": 0.000019225207689155255,
+  "by_exit_reason": {
+    "stop_loss": 9,
+    "take_profit": 3,
+    "trailing_stop": 8
+  },
+  "cum_r": -0.000026918720477220326,
+  "current_model_id": "side_lgbm_1777401438_5e7a5e",
+  "expectancy_per_trade": -1.3459360238610162e-6,
+  "hit_rate": 0.45,
+  "instrument": "AUD_USD",
+  "latest_action": "(none)",
+  "latest_close": 0.7182649999999999,
+  "latest_p_long": 0.5254328846931458,
+  "latest_p_short": 0.47456711530685425,
+  "latest_trade_ts_ms": 1777403550000,
+  "losses": 11,
+  "max_drawdown_bp": 1.214858261086327,
+  "n_trades": 20,
+  "profit_factor": 0.8653697712444997,
+  "sharpe_per_trade": -0.06321698686990027,
+  "sortino_per_trade": -0.09090207714955573,
+  "summary_updated_ms": 1777417108215,
+  "v": "v1.0.1",
+  "wins": 9
+}

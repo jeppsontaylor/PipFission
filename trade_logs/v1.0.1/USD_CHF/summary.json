@@ -1,0 +1,28 @@
+{
+  "avg_loss": -0.00002109714869600691,
+  "avg_win": 0.000023767011850095444,
+  "by_exit_reason": {
+    "stop_loss": 4,
+    "take_profit": 5,
+    "trailing_stop": 7
+  },
+  "cum_r": 0.00011108722632491297,
+  "current_model_id": "side_lgbm_1777401438_5e7a5e",
+  "expectancy_per_trade": 6.9429516453070605e-6,
+  "hit_rate": 0.625,
+  "instrument": "USD_CHF",
+  "latest_action": "(none)",
+  "latest_close": 0.78913,
+  "latest_p_long": 0.5392438769340515,
+  "latest_p_short": 0.4607561230659485,
+  "latest_trade_ts_ms": 1777403590000,
+  "losses": 6,
+  "max_drawdown_bp": 0.7206858334614551,
+  "n_trades": 16,
+  "profit_factor": 1.877584833268161,
+  "sharpe_per_trade": 0.28922732154387193,
+  "sortino_per_trade": 0.49261673810825973,
+  "summary_updated_ms": 1777417108235,
+  "v": "v1.0.1",
+  "wins": 10
+}

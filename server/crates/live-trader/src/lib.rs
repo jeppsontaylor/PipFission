@@ -864,6 +864,33 @@ fn build_decision_chain_json(entry: &str, exit_reason: &str) -> String {
 ///
 /// Failures are logged + swallowed at the call site; this helper is
 /// for review-time observability, not load-bearing.
+/// Refresh per-ticker summary.json + LATEST.md for every ticker that
+/// has a trades.jsonl on disk under `trade_logs/<v>/`. Used at
+/// api-server boot so the artifacts reflect the state of the world
+/// even if no fresh trade has fired since the last live-trader exit.
+pub fn refresh_all_ticker_summaries() -> Result<()> {
+    let root = trade_logs_root().join(version_folder(RELEASE_VERSION));
+    if !root.exists() {
+        return Ok(());
+    }
+    for entry in std::fs::read_dir(&root)?.flatten() {
+        if !entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+            continue;
+        }
+        let inst = match entry.file_name().into_string() {
+            Ok(s) => s,
+            Err(_) => continue,
+        };
+        if !entry.path().join("trades.jsonl").exists() {
+            continue;
+        }
+        if let Err(e) = update_ticker_summary(&inst) {
+            tracing::debug!(error = %e, instrument = %inst, "refresh_all_ticker_summaries: failed");
+        }
+    }
+    Ok(())
+}
+
 fn update_ticker_summary(instrument: &str) -> Result<()> {
     let root = trade_logs_root().join(version_folder(RELEASE_VERSION));
     let safe = instrument.replace('/', "_");
@@ -876,17 +903,25 @@ fn update_ticker_summary(instrument: &str) -> Result<()> {
     let actions = read_jsonl_lines(&actions_path).unwrap_or_default();
     let features = read_jsonl_lines(&features_path).unwrap_or_default();
 
-    // Aggregate trade stats.
-    let n_trades = trades.len();
+    // Aggregate trade stats. Trades sorted by ts_out_ms so the
+    // equity curve + drawdown are chronologically correct.
+    let mut trades_sorted = trades.clone();
+    trades_sorted.sort_by_key(|t| t.get("ts_out_ms").and_then(|v| v.as_i64()).unwrap_or(0));
+    let n_trades = trades_sorted.len();
     let mut wins = 0_usize;
     let mut losses = 0_usize;
     let mut cum_r = 0.0_f64;
+    let mut per_trade_r: Vec<f64> = Vec::with_capacity(n_trades);
+    let mut equity: Vec<f64> = Vec::with_capacity(n_trades + 1);
+    equity.push(1.0);
     let mut by_reason: std::collections::BTreeMap<String, u32> =
         std::collections::BTreeMap::new();
     let mut latest_trade_ts: Option<i64> = None;
-    for t in trades.iter() {
+    for t in trades_sorted.iter() {
         let r = t.get("realized_r").and_then(|v| v.as_f64()).unwrap_or(0.0);
         cum_r += r;
+        per_trade_r.push(r);
+        equity.push(equity.last().copied().unwrap_or(1.0) + r);
         if r > 0.0 {
             wins += 1;
         } else if r < 0.0 {
@@ -901,6 +936,40 @@ fn update_ticker_summary(instrument: &str) -> Result<()> {
     }
     let hit_rate = if (wins + losses) > 0 {
         wins as f64 / (wins + losses) as f64
+    } else {
+        0.0
+    };
+
+    // Risk-adjusted metrics. n_periods_per_year=1 because we treat
+    // each trade as one observation; per-trade Sharpe is the headline
+    // for an order-driven strategy. The metrics crate is the same
+    // implementation the backtester + research layer use, so live +
+    // research numbers stay comparable.
+    let sharpe_per_trade = metrics::sharpe(&per_trade_r, 1.0);
+    let sortino_per_trade = metrics::sortino(&per_trade_r, 1.0);
+    let max_dd_bp = metrics::max_drawdown_bp(&equity);
+    let profit_factor = {
+        let raw = metrics::profit_factor(&per_trade_r);
+        if raw.is_finite() {
+            raw
+        } else if raw > 0.0 {
+            999.0
+        } else {
+            0.0
+        }
+    };
+    let avg_win = if wins > 0 {
+        per_trade_r.iter().filter(|&&r| r > 0.0).sum::<f64>() / wins as f64
+    } else {
+        0.0
+    };
+    let avg_loss = if losses > 0 {
+        per_trade_r.iter().filter(|&&r| r < 0.0).sum::<f64>() / losses as f64
+    } else {
+        0.0
+    };
+    let expectancy = if n_trades > 0 {
+        cum_r / n_trades as f64
     } else {
         0.0
     };
@@ -923,12 +992,25 @@ fn update_ticker_summary(instrument: &str) -> Result<()> {
     let summary = serde_json::json!({
         "v": format!("v{RELEASE_VERSION}"),
         "instrument": instrument,
+        // Headline trade counts.
         "n_trades": n_trades,
         "wins": wins,
         "losses": losses,
         "hit_rate": hit_rate,
+        // Returns.
         "cum_r": cum_r,
+        "expectancy_per_trade": expectancy,
+        "avg_win": avg_win,
+        "avg_loss": avg_loss,
+        // Risk-adjusted (per-trade scale; not annualised — research +
+        // backtest use the same convention so numbers compare).
+        "sharpe_per_trade": sharpe_per_trade,
+        "sortino_per_trade": sortino_per_trade,
+        "max_drawdown_bp": max_dd_bp,
+        "profit_factor": profit_factor,
+        // Exit-reason histogram.
         "by_exit_reason": by_reason,
+        // Live state.
         "latest_trade_ts_ms": latest_trade_ts,
         "latest_action": last_action_str,
         "latest_close": close_now,
@@ -951,7 +1033,353 @@ fn update_ticker_summary(instrument: &str) -> Result<()> {
     let md_tmp = ticker_dir.join("LATEST.md.tmp");
     std::fs::write(&md_tmp, latest_md)?;
     std::fs::rename(&md_tmp, &md_path)?;
+
+    // Refresh the portfolio rollup so PERFORMANCE.md +
+    // portfolio_summary.json reflect the just-closed trade.
+    if let Err(e) = update_portfolio_summary(&root) {
+        tracing::debug!(error = %e, "live-trader: portfolio rollup failed");
+    }
     Ok(())
+}
+
+/// Convenience: refresh the portfolio rollup using the current
+/// `trade_logs/<version>/` root resolved from `CARGO_MANIFEST_DIR` /
+/// `TRADE_LOGS_DIR`. Useful for one-shot calls (e.g. api-server boot)
+/// when you want PERFORMANCE.md regenerated without waiting for a
+/// trade close.
+pub fn refresh_portfolio_summary() -> Result<()> {
+    let root = trade_logs_root().join(version_folder(RELEASE_VERSION));
+    update_portfolio_summary(&root)
+}
+
+/// Aggregate every per-ticker `<ticker>/summary.json` + `trades.jsonl`
+/// in `<root>/<version>/` into a single portfolio view. Writes
+/// `portfolio_summary.json` and `PERFORMANCE.md` at the version root.
+///
+/// The per-trade R values are concatenated chronologically across all
+/// tickers, so portfolio Sharpe/Sortino/max-DD treat the system as a
+/// single book — the right view for an agent reviewing whether the
+/// platform as a whole is making or losing money.
+fn update_portfolio_summary(root: &std::path::Path) -> Result<()> {
+    use serde_json::Value;
+
+    let mut all_trades: Vec<(i64, f64, String, String, String)> = Vec::new();
+    let mut by_instrument: std::collections::BTreeMap<String, serde_json::Value> =
+        std::collections::BTreeMap::new();
+    let mut latest_action_overall: Option<(i64, String, String, String)> = None;
+
+    for entry in std::fs::read_dir(root)?.flatten() {
+        if !entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+            continue;
+        }
+        let dir = entry.path();
+        let inst = match entry.file_name().into_string() {
+            Ok(s) => s,
+            Err(_) => continue,
+        };
+        // Read this ticker's summary + trades for the rollup.
+        let summary = read_jsonl_lines(&dir.join("summary.json")).ok().and_then(|v| {
+            // summary.json is a single object, not jsonl — fall back
+            // to a direct read.
+            std::fs::read_to_string(dir.join("summary.json"))
+                .ok()
+                .and_then(|s| serde_json::from_str::<Value>(&s).ok())
+                .or_else(|| v.into_iter().next())
+        });
+        let trades = read_jsonl_lines(&dir.join("trades.jsonl")).unwrap_or_default();
+        if trades.is_empty() {
+            continue;
+        }
+        if let Some(s) = summary.clone() {
+            by_instrument.insert(inst.clone(), s);
+        }
+        for t in trades {
+            let ts = t.get("ts_out_ms").and_then(|v| v.as_i64()).unwrap_or(0);
+            let r = t.get("realized_r").and_then(|v| v.as_f64()).unwrap_or(0.0);
+            let reason = t
+                .get("exit_reason")
+                .and_then(|v| v.as_str())
+                .unwrap_or("?")
+                .to_string();
+            let model = t
+                .get("model_kind")
+                .and_then(|v| v.as_str())
+                .unwrap_or("?")
+                .to_string();
+            all_trades.push((ts, r, inst.clone(), reason, model));
+        }
+        // Track the most-recent action across all tickers.
+        if let Some(s) = summary.as_ref() {
+            if let Some(ts) = s.get("latest_trade_ts_ms").and_then(|v| v.as_i64()) {
+                let act = s
+                    .get("latest_action")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("(none)")
+                    .to_string();
+                let model = s
+                    .get("current_model_id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("(none)")
+                    .to_string();
+                if latest_action_overall
+                    .as_ref()
+                    .map(|cur| ts > cur.0)
+                    .unwrap_or(true)
+                {
+                    latest_action_overall = Some((ts, inst.clone(), act, model));
+                }
+            }
+        }
+    }
+
+    all_trades.sort_by_key(|t| t.0);
+    let n_trades = all_trades.len();
+    let mut wins = 0_usize;
+    let mut losses = 0_usize;
+    let mut cum_r = 0.0_f64;
+    let mut equity: Vec<f64> = vec![1.0];
+    let mut per_trade_r: Vec<f64> = Vec::with_capacity(n_trades);
+    let mut by_reason: std::collections::BTreeMap<String, u32> = Default::default();
+    let mut by_model: std::collections::BTreeMap<String, u32> = Default::default();
+    for (_ts, r, _inst, reason, model) in &all_trades {
+        cum_r += r;
+        per_trade_r.push(*r);
+        equity.push(equity.last().copied().unwrap_or(1.0) + r);
+        if *r > 0.0 {
+            wins += 1;
+        } else if *r < 0.0 {
+            losses += 1;
+        }
+        *by_reason.entry(reason.clone()).or_insert(0) += 1;
+        *by_model.entry(model.clone()).or_insert(0) += 1;
+    }
+    let hit_rate = if (wins + losses) > 0 {
+        wins as f64 / (wins + losses) as f64
+    } else {
+        0.0
+    };
+    let sharpe = metrics::sharpe(&per_trade_r, 1.0);
+    let sortino = metrics::sortino(&per_trade_r, 1.0);
+    let max_dd_bp = metrics::max_drawdown_bp(&equity);
+    let pf_raw = metrics::profit_factor(&per_trade_r);
+    let profit_factor = if pf_raw.is_finite() {
+        pf_raw
+    } else if pf_raw > 0.0 {
+        999.0
+    } else {
+        0.0
+    };
+    let avg_win = if wins > 0 {
+        per_trade_r.iter().filter(|&&r| r > 0.0).sum::<f64>() / wins as f64
+    } else {
+        0.0
+    };
+    let avg_loss = if losses > 0 {
+        per_trade_r.iter().filter(|&&r| r < 0.0).sum::<f64>() / losses as f64
+    } else {
+        0.0
+    };
+    let expectancy = if n_trades > 0 {
+        cum_r / n_trades as f64
+    } else {
+        0.0
+    };
+
+    // Per-instrument breakdown (cum_r + sharpe per ticker).
+    let mut per_instrument: Vec<serde_json::Value> = Vec::new();
+    let mut by_inst_r: std::collections::BTreeMap<String, Vec<f64>> = Default::default();
+    for (_ts, r, inst, _, _) in &all_trades {
+        by_inst_r.entry(inst.clone()).or_default().push(*r);
+    }
+    for (inst, rs) in &by_inst_r {
+        let s_inst = metrics::sharpe(rs, 1.0);
+        let so_inst = metrics::sortino(rs, 1.0);
+        let cum_r_i: f64 = rs.iter().sum();
+        let n_i = rs.len();
+        let w_i = rs.iter().filter(|&&r| r > 0.0).count();
+        let mut eq = vec![1.0];
+        for r in rs {
+            eq.push(eq.last().copied().unwrap_or(1.0) + r);
+        }
+        let dd = metrics::max_drawdown_bp(&eq);
+        per_instrument.push(serde_json::json!({
+            "instrument": inst,
+            "n_trades": n_i,
+            "wins": w_i,
+            "losses": rs.iter().filter(|&&r| r < 0.0).count(),
+            "hit_rate": if n_i > 0 { w_i as f64 / n_i as f64 } else { 0.0 },
+            "cum_r": cum_r_i,
+            "sharpe_per_trade": s_inst,
+            "sortino_per_trade": so_inst,
+            "max_drawdown_bp": dd,
+        }));
+    }
+    per_instrument.sort_by(|a, b| {
+        b.get("cum_r")
+            .and_then(|v| v.as_f64())
+            .unwrap_or(0.0)
+            .partial_cmp(&a.get("cum_r").and_then(|v| v.as_f64()).unwrap_or(0.0))
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+
+    let portfolio = serde_json::json!({
+        "v": format!("v{RELEASE_VERSION}"),
+        "n_trades": n_trades,
+        "wins": wins,
+        "losses": losses,
+        "hit_rate": hit_rate,
+        "cum_r": cum_r,
+        "expectancy_per_trade": expectancy,
+        "avg_win": avg_win,
+        "avg_loss": avg_loss,
+        "sharpe_per_trade": sharpe,
+        "sortino_per_trade": sortino,
+        "max_drawdown_bp": max_dd_bp,
+        "profit_factor": profit_factor,
+        "by_exit_reason": by_reason,
+        "by_model_kind": by_model,
+        "per_instrument": per_instrument,
+        "n_instruments": per_instrument.len(),
+        "latest_trade_ts_ms": all_trades.last().map(|t| t.0),
+        "latest_action_overall": latest_action_overall.as_ref().map(|(ts, inst, act, model)| {
+            serde_json::json!({
+                "ts_ms": ts,
+                "instrument": inst,
+                "action": act,
+                "model_id": model,
+            })
+        }),
+        "summary_updated_ms": chrono::Utc::now().timestamp_millis(),
+    });
+
+    let summary_path = root.join("portfolio_summary.json");
+    let tmp = root.join("portfolio_summary.json.tmp");
+    std::fs::write(&tmp, serde_json::to_string_pretty(&portfolio)?)?;
+    std::fs::rename(&tmp, &summary_path)?;
+
+    let md = render_performance_md(&portfolio, &all_trades);
+    let md_path = root.join("PERFORMANCE.md");
+    let md_tmp = root.join("PERFORMANCE.md.tmp");
+    std::fs::write(&md_tmp, md)?;
+    std::fs::rename(&md_tmp, &md_path)?;
+    Ok(())
+}
+
+fn render_performance_md(
+    portfolio: &serde_json::Value,
+    all_trades: &[(i64, f64, String, String, String)],
+) -> String {
+    let mut buf = String::new();
+    buf.push_str("# PipFission portfolio performance\n\n");
+    buf.push_str(&format!(
+        "_Auto-generated by live-trader at {}. Aggregated across all instruments in this version's `trade_logs/`.\n\n",
+        chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ")
+    ));
+
+    buf.push_str("## Headline\n\n");
+    let p = |k: &str| portfolio.get(k).and_then(|v| v.as_f64()).unwrap_or(0.0);
+    let n_trades = portfolio.get("n_trades").and_then(|v| v.as_u64()).unwrap_or(0);
+    buf.push_str(&format!("- **Trades closed (all instruments)**: {}\n", n_trades));
+    buf.push_str(&format!(
+        "- **Wins / losses**: {} / {} (hit rate {:.1}%)\n",
+        portfolio.get("wins").and_then(|v| v.as_u64()).unwrap_or(0),
+        portfolio.get("losses").and_then(|v| v.as_u64()).unwrap_or(0),
+        100.0 * p("hit_rate"),
+    ));
+    let cum_r = p("cum_r");
+    let cum_r_label = if cum_r > 0.0 { "✓ profit" } else if cum_r < 0.0 { "✗ loss" } else { "flat" };
+    buf.push_str(&format!(
+        "- **Cumulative realised R**: {:+.6}  ({})\n",
+        cum_r, cum_r_label,
+    ));
+    buf.push_str(&format!(
+        "- **Expectancy / trade**: {:+.6}  (avg_win {:+.6}, avg_loss {:+.6})\n",
+        p("expectancy_per_trade"), p("avg_win"), p("avg_loss"),
+    ));
+    buf.push_str(&format!(
+        "- **Sharpe / Sortino (per-trade)**: {:.3} / {:.3}\n",
+        p("sharpe_per_trade"), p("sortino_per_trade"),
+    ));
+    buf.push_str(&format!(
+        "- **Max drawdown**: {:.1} bp  | **Profit factor**: {:.2}\n",
+        p("max_drawdown_bp"), p("profit_factor"),
+    ));
+    buf.push_str(&format!(
+        "- **Instruments traded**: {}\n",
+        portfolio.get("n_instruments").and_then(|v| v.as_u64()).unwrap_or(0),
+    ));
+    if let Some(latest) = portfolio.get("latest_action_overall") {
+        let ts = latest.get("ts_ms").and_then(|v| v.as_i64()).unwrap_or(0);
+        let inst = latest.get("instrument").and_then(|v| v.as_str()).unwrap_or("?");
+        let act = latest.get("action").and_then(|v| v.as_str()).unwrap_or("?");
+        let when = chrono::DateTime::<chrono::Utc>::from_timestamp_millis(ts)
+            .map(|d| d.format("%Y-%m-%d %H:%M:%S UTC").to_string())
+            .unwrap_or_else(|| ts.to_string());
+        buf.push_str(&format!(
+            "- **Latest action**: {} on {} at {}\n",
+            act, inst, when,
+        ));
+    }
+    buf.push('\n');
+
+    // Per-instrument breakdown table.
+    buf.push_str("## Per instrument\n\n");
+    buf.push_str("Sorted by cumulative R, descending.\n\n");
+    buf.push_str(
+        "| instrument | trades | wins | losses | hit | cum_r | sharpe | sortino | max_dd_bp |\n",
+    );
+    buf.push_str(
+        "| --- | --- | --- | --- | --- | --- | --- | --- | --- |\n",
+    );
+    if let Some(arr) = portfolio.get("per_instrument").and_then(|v| v.as_array()) {
+        for row in arr {
+            let inst = row.get("instrument").and_then(|v| v.as_str()).unwrap_or("?");
+            let n = row.get("n_trades").and_then(|v| v.as_u64()).unwrap_or(0);
+            let w = row.get("wins").and_then(|v| v.as_u64()).unwrap_or(0);
+            let l = row.get("losses").and_then(|v| v.as_u64()).unwrap_or(0);
+            let hr = row.get("hit_rate").and_then(|v| v.as_f64()).unwrap_or(0.0);
+            let cr = row.get("cum_r").and_then(|v| v.as_f64()).unwrap_or(0.0);
+            let sh = row.get("sharpe_per_trade").and_then(|v| v.as_f64()).unwrap_or(0.0);
+            let so = row.get("sortino_per_trade").and_then(|v| v.as_f64()).unwrap_or(0.0);
+            let dd = row.get("max_drawdown_bp").and_then(|v| v.as_f64()).unwrap_or(0.0);
+            buf.push_str(&format!(
+                "| {inst} | {n} | {w} | {l} | {:.0}% | {:+.6} | {:.3} | {:.3} | {:.1} |\n",
+                100.0 * hr, cr, sh, so, dd,
+            ));
+        }
+    }
+    buf.push('\n');
+
+    // Last 10 trades across all tickers.
+    buf.push_str("## Last 10 trades (all instruments, chronological)\n\n");
+    buf.push_str("| ts (UTC) | instrument | realized_r | reason | model |\n");
+    buf.push_str("| --- | --- | --- | --- | --- |\n");
+    let n = all_trades.len();
+    for (ts, r, inst, reason, model) in all_trades.iter().skip(n.saturating_sub(10)) {
+        let when = chrono::DateTime::<chrono::Utc>::from_timestamp_millis(*ts)
+            .map(|d| d.format("%H:%M:%S").to_string())
+            .unwrap_or_else(|| ts.to_string());
+        buf.push_str(&format!(
+            "| {when} | {inst} | {r:+.6} | {reason} | {model} |\n"
+        ));
+    }
+    buf.push('\n');
+
+    // Exit-reason histogram.
+    buf.push_str("## Exit-reason histogram\n\n");
+    if let Some(obj) = portfolio.get("by_exit_reason").and_then(|v| v.as_object()) {
+        for (k, v) in obj {
+            buf.push_str(&format!("- `{k}`: {}\n", v.as_u64().unwrap_or(0)));
+        }
+    }
+    buf.push('\n');
+
+    buf.push_str(
+        "_This file is the entry point for **\"is the system making or losing money?\"** agents. \
+        See `<ticker>/LATEST.md` for per-instrument detail and `<ticker>/trades.jsonl` for the raw \
+        per-trade records._\n",
+    );
+    buf
 }
 
 fn read_jsonl_lines(path: &std::path::Path) -> Result<Vec<serde_json::Value>> {
@@ -1008,6 +1436,22 @@ fn render_latest_md(
     buf.push_str(&format!(
         "- **Cumulative realised R**: {:+.6}\n",
         summary.get("cum_r").and_then(|v| v.as_f64()).unwrap_or(0.0)
+    ));
+    buf.push_str(&format!(
+        "- **Expectancy / trade**: {:+.6}  (avg_win {:+.6}, avg_loss {:+.6})\n",
+        summary.get("expectancy_per_trade").and_then(|v| v.as_f64()).unwrap_or(0.0),
+        summary.get("avg_win").and_then(|v| v.as_f64()).unwrap_or(0.0),
+        summary.get("avg_loss").and_then(|v| v.as_f64()).unwrap_or(0.0),
+    ));
+    buf.push_str(&format!(
+        "- **Sharpe / Sortino (per trade)**: {:.3} / {:.3}\n",
+        summary.get("sharpe_per_trade").and_then(|v| v.as_f64()).unwrap_or(0.0),
+        summary.get("sortino_per_trade").and_then(|v| v.as_f64()).unwrap_or(0.0),
+    ));
+    buf.push_str(&format!(
+        "- **Max drawdown**: {:.1} bp  | **Profit factor**: {:.2}\n",
+        summary.get("max_drawdown_bp").and_then(|v| v.as_f64()).unwrap_or(0.0),
+        summary.get("profit_factor").and_then(|v| v.as_f64()).unwrap_or(0.0),
     ));
     buf.push_str(&format!(
         "- **Current champion**: `{}`\n",

@@ -324,6 +324,19 @@ async fn main() -> Result<()> {
             live_trader::spawn(state.bus.clone(), db.clone(), cfg.clone());
             tracing::info!(run_id = %cfg.run_id, "live-trader: runner spawned");
 
+            // Refresh per-ticker summary.json/LATEST.md and the
+            // top-level PERFORMANCE.md/portfolio_summary.json from any
+            // existing trades.jsonl so the artifacts reflect today's
+            // state even if no trade fires immediately. Best-effort —
+            // failures are logged at debug; the next live trade will
+            // overwrite anyway.
+            if let Err(e) = live_trader::refresh_all_ticker_summaries() {
+                tracing::debug!(error = %e, "live-trader: ticker rollup refresh failed at boot");
+            }
+            if let Err(e) = live_trader::refresh_portfolio_summary() {
+                tracing::debug!(error = %e, "live-trader: portfolio rollup refresh failed at boot");
+            }
+
             // Order routing is a SECOND opt-in: live-trader emits
             // TraderDecision events regardless, but we only route them
             // through the active OrderRouter when the operator sets
