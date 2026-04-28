@@ -1,6 +1,11 @@
 """`python -m research lockbox` — single-shot 100-bar gate."""
 from __future__ import annotations
 
+import json
+from dataclasses import asdict
+from pathlib import Path
+from typing import Optional
+
 import typer
 from rich.console import Console
 from rich.table import Table
@@ -24,6 +29,16 @@ def seal(
     min_dsr: float = typer.Option(0.50, "--min-dsr"),
     max_dd_bp_limit: float = typer.Option(1500.0, "--max-dd-bp"),
     run_id: str = typer.Option(None, "--run-id"),
+    json_out: Optional[Path] = typer.Option(
+        None, "--json-out",
+        help="If set, write the lockbox result as JSON to this path. "
+             "Read by the Rust pipeline-orchestrator.",
+    ),
+    fail_silently: bool = typer.Option(
+        False, "--fail-silently",
+        help="When true, exit 0 even if the lockbox fails — the Rust "
+             "orchestrator owns the pass/fail decision via the JSON file.",
+    ),
 ) -> None:
     """Run the lockbox evaluation. Single-shot per (model_id, params_id);
     re-running with the same run_id raises."""
@@ -41,7 +56,7 @@ def seal(
     }
     with track_run("lockbox", args, instrument=instrument):
         _run(instrument, model_id, params_id, n_seen, n_lockbox, cost_stress,
-             min_n_trades, min_dsr, max_dd_bp_limit, run_id)
+             min_n_trades, min_dsr, max_dd_bp_limit, run_id, json_out, fail_silently)
 
 
 def _run(
@@ -55,6 +70,8 @@ def _run(
     min_dsr: float,
     max_dd_bp_limit: float,
     run_id: str,
+    json_out: Optional[Path] = None,
+    fail_silently: bool = False,
 ) -> None:
     cfg = LockboxConfig(
         instrument=instrument, model_id=model_id, params_id=params_id,
@@ -76,5 +93,14 @@ def _run(
     if res.reasons:
         table.add_row("reasons", "; ".join(res.reasons))
     console.print(table)
-    if not res.passed:
+
+    if json_out is not None:
+        payload = asdict(res)
+        json_out.parent.mkdir(parents=True, exist_ok=True)
+        tmp = json_out.with_suffix(json_out.suffix + ".tmp")
+        tmp.write_text(json.dumps(payload, default=str, indent=2))
+        tmp.replace(json_out)
+        console.print(f"[dim]wrote json_out to {json_out}[/dim]")
+
+    if not res.passed and not fail_silently:
         raise typer.Exit(1)

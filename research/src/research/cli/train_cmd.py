@@ -1,6 +1,9 @@
 """`python -m research train` — side classifier training driver."""
 from __future__ import annotations
 
+import json
+from dataclasses import asdict
+from pathlib import Path
 from typing import Optional
 
 import typer
@@ -30,6 +33,14 @@ def side(
         help="CSV of model names to evaluate. Defaults to full zoo "
              "(lgbm,xgb,catboost,logreg,extratrees). Pick by OOS log loss.",
     ),
+    json_out: Optional[Path] = typer.Option(
+        None,
+        "--json-out",
+        help="If set, write the training result as a structured JSON "
+             "object to this path. Used by the Rust pipeline-orchestrator "
+             "to parse the `model_id` and per-candidate metrics without "
+             "screen-scraping the rich-console output.",
+    ),
 ) -> None:
     """Train the side classifier with purged CPCV and write OOF probs."""
     args = {
@@ -44,7 +55,7 @@ def side(
         "candidates": candidates,
     }
     with track_run("train.side", args, instrument=instrument):
-        _run(instrument, n_bars, n_splits, n_test_groups, embargo_pct, n_optuna_trials, label_run_id, seed, candidates)
+        _run(instrument, n_bars, n_splits, n_test_groups, embargo_pct, n_optuna_trials, label_run_id, seed, candidates, json_out)
 
 
 def _run(
@@ -57,6 +68,7 @@ def _run(
     label_run_id: Optional[str],
     seed: int,
     candidates: Optional[str],
+    json_out: Optional[Path] = None,
 ) -> None:
     cfg = SideTrainConfig(
         instrument=instrument,
@@ -110,3 +122,17 @@ def _run(
             "✓" if c["is_winner"] else "",
         )
     console.print(cand_table)
+
+    # JSON-out for the Rust orchestrator. Same data the rich tables
+    # show, just structured for machine consumption. Atomic via
+    # tmp + rename so a partial write can't be parsed mid-flight.
+    if json_out is not None:
+        payload = asdict(res)
+        # `fitted_on_full` (sklearn pipeline) isn't JSON-serialisable;
+        # drop it — the Rust side only needs ids + metrics.
+        payload.pop("fitted_on_full", None)
+        json_out.parent.mkdir(parents=True, exist_ok=True)
+        tmp = json_out.with_suffix(json_out.suffix + ".tmp")
+        tmp.write_text(json.dumps(payload, default=str, indent=2))
+        tmp.replace(json_out)
+        console.print(f"[dim]wrote json_out to {json_out}[/dim]")

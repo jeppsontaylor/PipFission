@@ -1,6 +1,10 @@
 """`python -m research finetune` — NSGA-II trader fine-tuner."""
 from __future__ import annotations
 
+import json
+from pathlib import Path
+from typing import Optional
+
 import typer
 from rich.console import Console
 from rich.table import Table
@@ -21,6 +25,11 @@ def run(
     n_trials: int = typer.Option(50, "--trials"),
     cost_stress: float = typer.Option(1.0, "--cost-stress"),
     seed: int = typer.Option(7, "--seed"),
+    json_out: Optional[Path] = typer.Option(
+        None, "--json-out",
+        help="If set, write the fine-tune report as structured JSON to "
+             "this path. Read by the Rust pipeline-orchestrator.",
+    ),
 ) -> None:
     """Fine-tune TraderParams on the next 100 unseen bars."""
     args = {
@@ -33,7 +42,7 @@ def run(
         "seed": seed,
     }
     with track_run("finetune", args, instrument=instrument):
-        _run(instrument, model_id, n_train, n_fine_tune, n_trials, cost_stress, seed)
+        _run(instrument, model_id, n_train, n_fine_tune, n_trials, cost_stress, seed, json_out)
 
 
 def _run(
@@ -44,6 +53,7 @@ def _run(
     n_trials: int,
     cost_stress: float,
     seed: int,
+    json_out: Optional[Path] = None,
 ) -> None:
     cfg = TraderFineTuneConfig(
         instrument=instrument,
@@ -72,3 +82,10 @@ def _run(
     table.add_row("hit_rate", f"{ft.get('hit_rate', 0):.4f}")
     table.add_row("n_trades", str(ft.get("n_trades", 0)))
     console.print(table)
+
+    if json_out is not None:
+        json_out.parent.mkdir(parents=True, exist_ok=True)
+        tmp = json_out.with_suffix(json_out.suffix + ".tmp")
+        tmp.write_text(json.dumps(rep, default=str, indent=2))
+        tmp.replace(json_out)
+        console.print(f"[dim]wrote json_out to {json_out}[/dim]")

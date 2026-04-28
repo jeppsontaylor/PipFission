@@ -30,7 +30,7 @@
 //! `MAX_OOS_LOG_LOSS`, `REQUIRE_LOCKBOX_PASS`, etc.) propagate
 //! through the spawned subprocess automatically.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
 use anyhow::{Context, Result};
@@ -97,11 +97,15 @@ fn main() -> Result<()> {
     );
 
     // Drop our DB handle BEFORE spawning Python so the file lock is
-    // released. The Python core needs the lock to write
+    // released. The Python steps need the lock to write
     // labels/oof/metrics/etc.
     drop(db);
 
-    let py_outcome = run_python_core(&args);
+    // Run the staged pipeline. Each step is a separate Python
+    // subprocess; the orchestrator threads model_id / params_id
+    // between them. If any step fails, the rest are skipped and the
+    // failure is recorded in the post-flight tracker.
+    let py_outcome = run_staged_pipeline(&args, &db_path);
     let py_ok = py_outcome.is_ok();
     let py_err = py_outcome.as_ref().err().map(|e| format!("{e:#}"));
 
@@ -128,39 +132,295 @@ fn main() -> Result<()> {
     }
 }
 
-fn run_python_core(args: &Args) -> Result<()> {
-    let venv_python = std::env::var("PIPELINE_PYTHON_BIN")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from("./.venv/bin/python"));
-    let research_dir = std::env::var("PIPELINE_RESEARCH_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from("./research"));
+/// Cached paths to the venv python interpreter + research dir. Both
+/// are env-overridable; defaults match the supervisor convention.
+struct PyEnv {
+    python: PathBuf,
+    research_dir: PathBuf,
+}
 
-    let mut cmd = std::process::Command::new(&venv_python);
-    cmd.arg("-m").arg("research").arg("pipeline").arg("run")
-        .arg("--instrument").arg(&args.instrument)
-        .arg("--side-trials").arg(args.side_trials.to_string())
-        .arg("--trader-trials").arg(args.trader_trials.to_string())
-        .current_dir(&research_dir)
-        .stdout(Stdio::inherit())
-        .stderr(Stdio::inherit())
-        .stdin(Stdio::null());
-    if args.publish_on_lockbox_fail {
-        cmd.arg("--publish-on-lockbox-fail");
+impl PyEnv {
+    fn from_env() -> Self {
+        Self {
+            python: std::env::var("PIPELINE_PYTHON_BIN")
+                .map(PathBuf::from)
+                .unwrap_or_else(|_| PathBuf::from("./.venv/bin/python")),
+            research_dir: std::env::var("PIPELINE_RESEARCH_DIR")
+                .map(PathBuf::from)
+                .unwrap_or_else(|_| PathBuf::from("./research")),
+        }
     }
 
-    tracing::info!(
-        python = %venv_python.display(),
-        cwd = %research_dir.display(),
-        "pipeline-orchestrator: spawning python ML core"
-    );
-    let status = cmd
+    /// Build a `python -m research <subcmd...>` command rooted at
+    /// `research_dir`. Stdout/stderr inherit so the supervisor log
+    /// captures everything.
+    fn cmd(&self, subargs: &[&str]) -> std::process::Command {
+        let mut cmd = std::process::Command::new(&self.python);
+        cmd.arg("-m").arg("research");
+        for a in subargs {
+            cmd.arg(a);
+        }
+        cmd.current_dir(&self.research_dir)
+            .stdout(Stdio::inherit())
+            .stderr(Stdio::inherit())
+            .stdin(Stdio::null());
+        cmd
+    }
+}
+
+/// Run the full pipeline as a sequence of focused Python subprocesses,
+/// threading IDs (label_run_id → model_id → params_id) between them.
+///
+/// Steps:
+/// 1. `label run` → emits `{"label_run_id": "...", "n_chosen": N}`
+///    on stdout; the orchestrator reads the most recent
+///    `labels.label_run_id` from DB instead of parsing stdout.
+/// 2. `train side --json-out` → produces a `model_id` + per-candidate
+///    metrics. Persists to model_metrics + model_candidates +
+///    model_artifacts.
+/// 3. `finetune run --json-out` → produces a `params_id`. Persists
+///    to trader_metrics + optimizer_trials.
+/// 4. `lockbox seal --json-out --fail-silently` → produces a sealed
+///    `lockbox_results` row. Pass/fail is read from the JSON.
+/// 5. `export champion --json-out` → produces ONNX + manifest.
+///    Skipped when the lockbox failed AND `--publish-on-lockbox-fail`
+///    is not set. The deployment-gate decision is computed in Rust
+///    via the `deploy-gate` crate before deciding whether to export.
+fn run_staged_pipeline(args: &Args, db_path: &Path) -> Result<()> {
+    let py = PyEnv::from_env();
+    let scratch = std::env::temp_dir().join(format!(
+        "pipeline-orchestrator-{}-{}",
+        args.instrument.replace('/', "_"),
+        std::process::id(),
+    ));
+    std::fs::create_dir_all(&scratch).context("create scratch dir")?;
+
+    // 1. Label.
+    tracing::info!("step 1/5: label");
+    let status = py
+        .cmd(&[
+            "label", "run",
+            "--instrument", &args.instrument,
+            "--n-bars", "1000",
+        ])
         .status()
-        .with_context(|| format!("spawn {}", venv_python.display()))?;
+        .context("spawn label")?;
     if !status.success() {
-        anyhow::bail!("python pipeline exited with {status}");
+        anyhow::bail!("label step failed: {status}");
     }
+    // Get the most recent label_run_id by reading directly from the
+    // DB. We deliberately re-open + immediately close so we don't hold
+    // the lock while the next step runs.
+    let label_run_id = read_latest_label_run_id(db_path, &args.instrument)?
+        .context("no labels row written by label step")?;
+    tracing::info!(label_run_id = %label_run_id, "step 1/5: label done");
+
+    // 2. Train side classifier.
+    tracing::info!("step 2/5: train side classifier (zoo)");
+    let train_json = scratch.join("train.json");
+    let status = py
+        .cmd(&[
+            "train", "side",
+            "--instrument", &args.instrument,
+            "--label-run-id", &label_run_id,
+            "--trials", &args.side_trials.to_string(),
+            "--json-out", &train_json.to_string_lossy(),
+        ])
+        .status()
+        .context("spawn train side")?;
+    if !status.success() {
+        anyhow::bail!("train.side step failed: {status}");
+    }
+    let train_json_text = std::fs::read_to_string(&train_json)
+        .with_context(|| format!("read train.json at {}", train_json.display()))?;
+    let train_payload: serde_json::Value = serde_json::from_str(&train_json_text)
+        .context("parse train.json")?;
+    let model_id = train_payload
+        .get("model_id")
+        .and_then(|v| v.as_str())
+        .context("train.json missing model_id")?
+        .to_string();
+    tracing::info!(model_id = %model_id, "step 2/5: train done");
+
+    // 3. Fine-tune trader.
+    tracing::info!("step 3/5: trader fine-tune");
+    let ft_json = scratch.join("finetune.json");
+    let status = py
+        .cmd(&[
+            "finetune", "run",
+            "--instrument", &args.instrument,
+            "--model-id", &model_id,
+            "--trials", &args.trader_trials.to_string(),
+            "--json-out", &ft_json.to_string_lossy(),
+        ])
+        .status()
+        .context("spawn finetune")?;
+    if !status.success() {
+        anyhow::bail!("finetune step failed: {status}");
+    }
+    let ft_json_text = std::fs::read_to_string(&ft_json)
+        .with_context(|| format!("read finetune.json at {}", ft_json.display()))?;
+    let ft_payload: serde_json::Value = serde_json::from_str(&ft_json_text)
+        .context("parse finetune.json")?;
+    let params_id = ft_payload
+        .get("params_id")
+        .and_then(|v| v.as_str())
+        .context("finetune.json missing params_id")?
+        .to_string();
+    tracing::info!(params_id = %params_id, "step 3/5: finetune done");
+
+    // 4. Lockbox.
+    tracing::info!("step 4/5: lockbox seal");
+    let lb_json = scratch.join("lockbox.json");
+    let lb_run_id = format!("lockbox_{model_id}_{params_id}");
+    let status = py
+        .cmd(&[
+            "lockbox", "seal",
+            "--instrument", &args.instrument,
+            "--model-id", &model_id,
+            "--params-id", &params_id,
+            "--run-id", &lb_run_id,
+            "--json-out", &lb_json.to_string_lossy(),
+            "--fail-silently",
+        ])
+        .status()
+        .context("spawn lockbox")?;
+    if !status.success() {
+        anyhow::bail!("lockbox step exited non-zero (despite --fail-silently): {status}");
+    }
+    let lb_json_text = std::fs::read_to_string(&lb_json)
+        .with_context(|| format!("read lockbox.json at {}", lb_json.display()))?;
+    let lb_payload: serde_json::Value = serde_json::from_str(&lb_json_text)
+        .context("parse lockbox.json")?;
+    let lockbox_passed = lb_payload
+        .get("passed")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    tracing::info!(
+        lockbox_passed,
+        run_id = %lb_run_id,
+        "step 4/5: lockbox done"
+    );
+
+    // 5a. Deployment gate (Rust). This re-opens the DB briefly to read
+    // model_metrics + the lockbox decision, runs the pure-logic gate,
+    // and persists the decision to model_deployment_gate. The
+    // python_pipeline equivalent (research/deployment/gate.py) is
+    // bypassed entirely.
+    let gate_passed = evaluate_and_persist_gate(
+        db_path,
+        &args.instrument,
+        &model_id,
+        lockbox_passed,
+    )
+    .context("deployment gate evaluation")?;
+
+    let should_export = (lockbox_passed || args.publish_on_lockbox_fail) && gate_passed;
+    if !should_export {
+        tracing::info!(
+            lockbox_passed,
+            gate_passed,
+            "step 5/5: export skipped (lockbox+gate gate)"
+        );
+        // Clean up scratch + return success — the upstream pipeline
+        // ran fine, we just chose not to publish.
+        let _ = std::fs::remove_dir_all(&scratch);
+        return Ok(());
+    }
+
+    // 5b. Export ONNX (only when gate passes).
+    tracing::info!("step 5/5: export ONNX");
+    let exp_json = scratch.join("export.json");
+    let status = py
+        .cmd(&[
+            "export", "champion",
+            "--model-id", &model_id,
+            "--json-out", &exp_json.to_string_lossy(),
+        ])
+        .status()
+        .context("spawn export")?;
+    if !status.success() {
+        anyhow::bail!("export step failed: {status}");
+    }
+    tracing::info!(model_id = %model_id, "step 5/5: export done");
+
+    // Best-effort scratch cleanup.
+    let _ = std::fs::remove_dir_all(&scratch);
     Ok(())
+}
+
+/// Read the most recent `label_run_id` for `instrument` from the
+/// `labels` table. Used to thread the id from the label step to the
+/// train step without parsing python stdout.
+fn read_latest_label_run_id(db_path: &Path, instrument: &str) -> Result<Option<String>> {
+    let db = Db::open(db_path).context("open db for label_run_id lookup")?;
+    let id: Option<String> = db.with_conn(|conn| -> duckdb::Result<Option<String>> {
+        let mut stmt = conn.prepare(
+            "SELECT label_run_id FROM labels WHERE instrument = ?
+             ORDER BY ts_ms DESC LIMIT 1",
+        )?;
+        let r: Option<String> = stmt
+            .query_map(duckdb::params![instrument], |row| row.get::<_, String>(0))?
+            .next()
+            .transpose()?;
+        Ok(r)
+    })?;
+    Ok(id)
+}
+
+/// Read model_metrics + lockbox_results for `model_id`, run the
+/// `deploy-gate` evaluation, persist the decision. Returns `passed_gate`.
+fn evaluate_and_persist_gate(
+    db_path: &Path,
+    instrument: &str,
+    model_id: &str,
+    lockbox_passed: bool,
+) -> Result<bool> {
+    use deploy_gate::{evaluate, persist, DeploymentGateThresholds, GateInputs};
+
+    let db = Db::open(db_path).context("open db for gate evaluation")?;
+    let metrics: (f64, f64, f64, f64) = db
+        .with_conn(|conn| -> duckdb::Result<(f64, f64, f64, f64)> {
+            conn.query_row(
+                "SELECT oos_auc, oos_log_loss, oos_brier, oos_balanced_acc
+                 FROM model_metrics WHERE model_id = ? LIMIT 1",
+                duckdb::params![model_id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )
+        })
+        .context("read model_metrics for gate")?;
+    let trader: (f64, f64) = db
+        .with_conn(|conn| -> duckdb::Result<(f64, f64)> {
+            conn.query_row(
+                "SELECT fine_tune_sortino, max_dd_bp
+                 FROM trader_metrics WHERE model_id = ?
+                 ORDER BY ts_ms DESC LIMIT 1",
+                duckdb::params![model_id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+        })
+        .context("read trader_metrics for gate")?;
+    let inputs = GateInputs {
+        model_id: model_id.to_string(),
+        instrument: instrument.to_string(),
+        oos_auc: metrics.0,
+        oos_log_loss: metrics.1,
+        oos_brier: metrics.2,
+        oos_balanced_acc: metrics.3,
+        fine_tune_sortino: trader.0,
+        fine_tune_max_dd_bp: trader.1,
+        lockbox_passed,
+        ts_ms: None,
+    };
+    let thresholds = DeploymentGateThresholds::from_env();
+    let result = evaluate(&inputs, &thresholds);
+    persist(&db, &result).context("persist gate result")?;
+    tracing::info!(
+        passed_gate = result.passed_gate,
+        n_blocked = result.blocked_reasons.len(),
+        "deploy-gate evaluated"
+    );
+    Ok(result.passed_gate)
 }
 
 #[derive(Serialize, Deserialize, Debug)]

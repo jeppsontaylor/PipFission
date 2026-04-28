@@ -90,3 +90,10 @@ def _run(
     if write:
         rid = write_labels(instrument, payload, run_id)
         console.print(f"[green]wrote labels under run_id={rid}[/green]")
+        # Also surface the run_id on stdout so the Rust orchestrator can
+        # capture it without parsing the rich console output. One JSON
+        # object per line is the same convention as the other CLIs'
+        # --json-out flags but here we only need the id, so a single
+        # marker line is enough.
+        import json as _json
+        print(_json.dumps({"label_run_id": rid, "n_chosen": len(payload.get("labels", []))}))
