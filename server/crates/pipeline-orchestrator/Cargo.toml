@@ -20,7 +20,13 @@ duckdb = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 clap = { version = "4", features = ["derive"] }
+uuid = { version = "1", features = ["v4"] }
+market-domain = { workspace = true }
 persistence = { workspace = true }
 observability = { workspace = true }
 deploy-gate = { workspace = true }
+labeling = { workspace = true }
+lockbox = { workspace = true }
+trader = { workspace = true }
+inference = { workspace = true }
 live-trader = { workspace = true }

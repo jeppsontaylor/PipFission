@@ -9,7 +9,6 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
-from research.observability import track_run
 from research.trader.optimizer import TraderFineTuneConfig, fine_tune_trader
 
 app = typer.Typer(no_args_is_help=True)
@@ -41,8 +40,7 @@ def run(
         "cost_stress": cost_stress,
         "seed": seed,
     }
-    with track_run("finetune", args, instrument=instrument):
-        _run(instrument, model_id, n_train, n_fine_tune, n_trials, cost_stress, seed, json_out)
+    _run(instrument, model_id, n_train, n_fine_tune, n_trials, cost_stress, seed, json_out)
 
 
 def _run(

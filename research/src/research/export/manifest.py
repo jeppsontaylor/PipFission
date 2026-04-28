@@ -29,9 +29,16 @@ def write_manifest(
     onnx_path: str,
     feature_names: list[str],
     extra: dict[str, Any] | None = None,
+    publish_live: bool = True,
 ) -> dict[str, Any]:
     """Write `manifest.json` next to the ONNX model AND insert a row
     into `model_artifacts`. Returns the manifest dict.
+
+    When `publish_live` is True (default for backwards compat), also
+    copies the ONNX + manifest to the well-known live dir
+    (`research/artifacts/models/live/`). The Rust orchestrator sets
+    `publish_live=False` so it can run lockbox + gate FIRST and only
+    promote to live on pass.
     """
     onnx_p = Path(onnx_path)
     if not onnx_p.exists():
@@ -55,11 +62,11 @@ def write_manifest(
     manifest_path = onnx_p.parent / "manifest.json"
     manifest_path.write_text(json.dumps(manifest, indent=2))
 
-    # Also ship a copy at the well-known live-engine location.
-    live_dir = PATHS.artifacts_dir / "models" / "live"
-    live_dir.mkdir(parents=True, exist_ok=True)
-    (live_dir / "champion.onnx").write_bytes(onnx_blob)
-    (live_dir / "manifest.json").write_text(json.dumps(manifest, indent=2))
+    if publish_live:
+        live_dir = PATHS.artifacts_dir / "models" / "live"
+        live_dir.mkdir(parents=True, exist_ok=True)
+        (live_dir / "champion.onnx").write_bytes(onnx_blob)
+        (live_dir / "manifest.json").write_text(json.dumps(manifest, indent=2))
 
     with rw_conn() as c:
         c.execute("DELETE FROM model_artifacts WHERE model_id = ?", [model_id])

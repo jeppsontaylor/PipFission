@@ -395,6 +395,52 @@ impl Db {
         }
     }
 
+    /// Insert chosen labels for `instrument` under `label_run_id`.
+    /// Idempotent on `(instrument, label_run_id)` — DELETEs any prior
+    /// rows for that pair before inserting. The Rust pipeline
+    /// orchestrator calls this directly, replacing the python
+    /// `research.labeling.label_loader.write_labels` shim.
+    pub fn insert_labels(
+        &self,
+        instrument: &str,
+        label_run_id: &str,
+        labels: &[labeling::LabelRow],
+    ) -> Result<usize> {
+        let conn = self.inner.lock();
+        conn.execute(
+            "DELETE FROM labels WHERE instrument = ? AND label_run_id = ?",
+            params![instrument, label_run_id],
+        )?;
+        let mut n = 0_usize;
+        for r in labels {
+            let barrier_str = match r.barrier_hit {
+                labeling::BarrierHit::Pt => "pt",
+                labeling::BarrierHit::Sl => "sl",
+                labeling::BarrierHit::Vert => "vert",
+            };
+            let oracle_score = r.realized_r.abs();
+            conn.execute(
+                "INSERT INTO labels
+                     (instrument, ts_ms, t1_ms, side, meta_y, realized_r,
+                      barrier_hit, oracle_score, label_run_id)
+                  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                params![
+                    instrument,
+                    r.ts_ms,
+                    r.t1_ms,
+                    r.side as i32,
+                    r.meta_y as i32,
+                    r.realized_r,
+                    barrier_str,
+                    oracle_score,
+                    label_run_id,
+                ],
+            )?;
+            n += 1;
+        }
+        Ok(n)
+    }
+
     /// Recent labels for an instrument; ordered ascending so the
     /// dashboard can overlay them on the price chart.
     pub fn recent_labels(&self, instrument: &str, limit: usize) -> Result<Vec<LabelRow>> {

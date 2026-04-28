@@ -7,8 +7,6 @@ from rich.console import Console
 from research.cli import (
     export_cmd,
     finetune_cmd,
-    label_cmd,
-    lockbox_cmd,
     train_cmd,
 )
 
@@ -18,10 +16,8 @@ app = typer.Typer(
     help="Spicy Penguin research layer: extract → label → train → fine-tune → lockbox → export.",
 )
 
-app.add_typer(label_cmd.app, name="label", help="Run the constrained label optimiser.")
 app.add_typer(train_cmd.app, name="train", help="Train the side classifier with purged CPCV.")
 app.add_typer(finetune_cmd.app, name="finetune", help="NSGA-II trader optimiser on the next 100 bars.")
-app.add_typer(lockbox_cmd.app, name="lockbox", help="Single-shot 100-bar lockbox gate.")
 app.add_typer(export_cmd.app, name="export", help="Export champion to ONNX + manifest.")
 # `pipeline` subcommand removed — the orchestrator is now the Rust
 # binary `server/target/release/pipeline-orchestrator`. Each step

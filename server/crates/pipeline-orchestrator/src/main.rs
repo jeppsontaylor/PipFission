@@ -205,24 +205,14 @@ fn run_staged_pipeline(args: &Args, db_path: &Path) -> Result<()> {
     ));
     std::fs::create_dir_all(&scratch).context("create scratch dir")?;
 
-    // 1. Label.
-    tracing::info!("step 1/5: label");
-    let status = py
-        .cmd(&[
-            "label", "run",
-            "--instrument", &args.instrument,
-            "--n-bars", "1000",
-        ])
-        .status()
-        .context("spawn label")?;
-    if !status.success() {
-        anyhow::bail!("label step failed: {status}");
-    }
-    // Get the most recent label_run_id by reading directly from the
-    // DB. We deliberately re-open + immediately close so we don't hold
-    // the lock while the next step runs.
-    let label_run_id = read_latest_label_run_id(db_path, &args.instrument)?
-        .context("no labels row written by label step")?;
+    // 1. Label — fully Rust (no python subprocess). Reads bars from
+    //    persistence, runs `labeling::run_label_pipeline`, persists
+    //    the chosen labels to DuckDB via `Db::insert_labels`. Closes
+    //    the DB handle before the next step so the lock is free for
+    //    the python ML steps.
+    tracing::info!("step 1/5: label (Rust in-process)");
+    let label_run_id = run_label_step(db_path, &args.instrument)
+        .context("label step failed")?;
     tracing::info!(label_run_id = %label_run_id, "step 1/5: label done");
 
     // 2. Train side classifier.
@@ -279,44 +269,61 @@ fn run_staged_pipeline(args: &Args, db_path: &Path) -> Result<()> {
         .to_string();
     tracing::info!(params_id = %params_id, "step 3/5: finetune done");
 
-    // 4. Lockbox.
-    tracing::info!("step 4/5: lockbox seal");
-    let lb_json = scratch.join("lockbox.json");
-    let lb_run_id = format!("lockbox_{model_id}_{params_id}");
+    // 4. Export ONNX (no live publish yet). The Rust lockbox needs an
+    //    on-disk ONNX to score the held-out slice via
+    //    `inference::PredictorRegistry`. We write the ONNX + manifest
+    //    to the model's per-id directory but DELIBERATELY do NOT
+    //    promote to the live dir until lockbox + deploy-gate both
+    //    pass. The lockbox + gate run in Rust below.
+    tracing::info!("step 4/6: ONNX export (no-publish-live)");
+    let exp_json = scratch.join("export.json");
     let status = py
         .cmd(&[
-            "lockbox", "seal",
-            "--instrument", &args.instrument,
+            "export", "champion",
             "--model-id", &model_id,
-            "--params-id", &params_id,
-            "--run-id", &lb_run_id,
-            "--json-out", &lb_json.to_string_lossy(),
-            "--fail-silently",
+            "--json-out", &exp_json.to_string_lossy(),
+            "--no-publish-live",
         ])
         .status()
-        .context("spawn lockbox")?;
+        .context("spawn export")?;
     if !status.success() {
-        anyhow::bail!("lockbox step exited non-zero (despite --fail-silently): {status}");
+        anyhow::bail!("export step failed: {status}");
     }
-    let lb_json_text = std::fs::read_to_string(&lb_json)
-        .with_context(|| format!("read lockbox.json at {}", lb_json.display()))?;
-    let lb_payload: serde_json::Value = serde_json::from_str(&lb_json_text)
-        .context("parse lockbox.json")?;
-    let lockbox_passed = lb_payload
-        .get("passed")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
+    let exp_json_text = std::fs::read_to_string(&exp_json)
+        .with_context(|| format!("read export.json at {}", exp_json.display()))?;
+    let exp_payload: serde_json::Value = serde_json::from_str(&exp_json_text)
+        .context("parse export.json")?;
+    let onnx_path = exp_payload
+        .get("onnx_path")
+        .and_then(|v| v.as_str())
+        .context("export.json missing onnx_path")?
+        .to_string();
+    tracing::info!(onnx_path = %onnx_path, "step 4/6: export done (per-id only)");
+
+    // 5. Lockbox — fully Rust (no python subprocess). Loads the just-
+    //    written ONNX via `inference::PredictorRegistry`, runs the
+    //    deterministic Rust backtest on the sealed slice, persists
+    //    `lockbox_results`. Replaces `python -m research lockbox seal`.
+    tracing::info!("step 5/6: lockbox seal (Rust in-process)");
+    let lb_run_id = format!("lockbox_{model_id}_{params_id}");
+    let lockbox_passed = run_lockbox_step(
+        db_path,
+        &args.instrument,
+        &model_id,
+        &params_id,
+        &onnx_path,
+        &lb_run_id,
+    )
+    .context("lockbox step failed")?;
     tracing::info!(
         lockbox_passed,
         run_id = %lb_run_id,
-        "step 4/5: lockbox done"
+        "step 5/6: lockbox done"
     );
 
-    // 5a. Deployment gate (Rust). This re-opens the DB briefly to read
-    // model_metrics + the lockbox decision, runs the pure-logic gate,
-    // and persists the decision to model_deployment_gate. The
-    // python_pipeline equivalent (research/deployment/gate.py) is
-    // bypassed entirely.
+    // 6a. Deployment gate (Rust). Re-opens the DB briefly to read
+    //     model_metrics + the lockbox decision, runs the pure-logic
+    //     gate, persists the decision to model_deployment_gate.
     let gate_passed = evaluate_and_persist_gate(
         db_path,
         &args.instrument,
@@ -325,43 +332,159 @@ fn run_staged_pipeline(args: &Args, db_path: &Path) -> Result<()> {
     )
     .context("deployment gate evaluation")?;
 
-    let should_export = (lockbox_passed || args.publish_on_lockbox_fail) && gate_passed;
-    if !should_export {
+    let should_publish = (lockbox_passed || args.publish_on_lockbox_fail) && gate_passed;
+    if !should_publish {
         tracing::info!(
             lockbox_passed,
             gate_passed,
-            "step 5/5: export skipped (lockbox+gate gate)"
+            "step 6/6: publish-to-live skipped (lockbox+gate)"
         );
-        // Clean up scratch + return success — the upstream pipeline
-        // ran fine, we just chose not to publish.
         let _ = std::fs::remove_dir_all(&scratch);
         return Ok(());
     }
 
-    // 5b. Export ONNX (only when gate passes).
-    tracing::info!("step 5/5: export ONNX");
-    let exp_json = scratch.join("export.json");
-    let status = py
-        .cmd(&[
-            "export", "champion",
-            "--model-id", &model_id,
-            "--json-out", &exp_json.to_string_lossy(),
-        ])
-        .status()
-        .context("spawn export")?;
-    if !status.success() {
-        anyhow::bail!("export step failed: {status}");
-    }
-    tracing::info!(model_id = %model_id, "step 5/5: export done");
+    // 6b. Promote ONNX from per-id dir to the live serving dir. Pure
+    //     file-copy in Rust (no python). The api-server's hot-swap
+    //     watcher picks it up on its next inotify tick.
+    tracing::info!("step 6/6: publish ONNX to live dir");
+    publish_onnx_to_live(&onnx_path).context("publish to live dir")?;
+    tracing::info!(model_id = %model_id, "step 6/6: live-publish done");
 
-    // Best-effort scratch cleanup.
     let _ = std::fs::remove_dir_all(&scratch);
     Ok(())
+}
+
+/// Score the lockbox slice via `inference::PredictorRegistry`, run
+/// the Rust lockbox crate, persist + return pass/fail. Replaces the
+/// Python `lockbox seal` subprocess entirely.
+fn run_lockbox_step(
+    db_path: &Path,
+    instrument: &str,
+    model_id: &str,
+    params_id: &str,
+    onnx_path: &str,
+    run_id: &str,
+) -> Result<bool> {
+    use std::sync::Arc;
+    let db = Db::open(db_path).context("open db for lockbox")?;
+    // Load TraderParams for this params_id from the trader_metrics row.
+    let params_json: String = db.with_conn(|conn| -> duckdb::Result<String> {
+        conn.query_row(
+            "SELECT params_json FROM trader_metrics WHERE params_id = ? LIMIT 1",
+            duckdb::params![params_id],
+            |r| r.get::<_, String>(0),
+        )
+    })?;
+    let params: trader::TraderParams =
+        serde_json::from_str(&params_json).context("parse trader params_json")?;
+
+    // Load the ONNX manifest the python export step just wrote and
+    // construct a Predictor from it. `try_load_onnx` validates the
+    // input/output shape against `expected_n_features` (24).
+    let manifest_path = Path::new(onnx_path)
+        .parent()
+        .map(|p| p.join("manifest.json"))
+        .context("derive manifest path from onnx_path")?;
+    let registry =
+        Arc::new(inference::PredictorRegistry::new(market_domain::FEATURE_DIM));
+    registry
+        .try_load_onnx(&manifest_path)
+        .with_context(|| format!("try_load_onnx {}", manifest_path.display()))?;
+    let predictor = registry.current();
+
+    // Default lockbox config; thresholds are env-overridable via
+    // LOCKBOX_* env vars at the lockbox crate boundary in the future.
+    let cfg = lockbox::LockboxConfig {
+        instrument: instrument.to_string(),
+        model_id: model_id.to_string(),
+        params_id: params_id.to_string(),
+        ..Default::default()
+    };
+    let res = lockbox::seal_lockbox(&db, &cfg, &params, predictor.0.as_ref(), run_id)?;
+    Ok(res.passed)
+}
+
+/// Copy `<model_dir>/champion.onnx` + `<model_dir>/manifest.json` to
+/// the live serving dir. Atomic via tmp + rename so the api-server's
+/// inotify watcher never sees a partial file.
+fn publish_onnx_to_live(onnx_path: &str) -> Result<()> {
+    let onnx = Path::new(onnx_path);
+    let model_dir = onnx.parent().context("onnx_path has no parent")?;
+    let manifest = model_dir.join("manifest.json");
+    if !manifest.exists() {
+        anyhow::bail!("manifest.json missing next to {onnx_path}");
+    }
+
+    // Anchor live dir at the workspace root via CARGO_MANIFEST_DIR.
+    let crate_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let workspace_root = crate_dir
+        .parent()
+        .and_then(|p| p.parent())
+        .and_then(|p| p.parent())
+        .context("derive workspace root")?;
+    let live_dir = workspace_root.join("research/artifacts/models/live");
+    std::fs::create_dir_all(&live_dir).context("mkdir live dir")?;
+
+    for (src, name) in [(onnx, "champion.onnx"), (manifest.as_path(), "manifest.json")] {
+        let dst = live_dir.join(name);
+        let tmp = live_dir.join(format!("{name}.tmp"));
+        std::fs::copy(src, &tmp)
+            .with_context(|| format!("copy {} → {}", src.display(), tmp.display()))?;
+        std::fs::rename(&tmp, &dst)
+            .with_context(|| format!("rename {} → {}", tmp.display(), dst.display()))?;
+    }
+    Ok(())
+}
+
+/// Run the label step entirely in-process: load bars, run the
+/// labelling pipeline, persist the chosen labels. Returns the new
+/// `label_run_id` for downstream steps.
+fn run_label_step(db_path: &Path, instrument: &str) -> Result<String> {
+    let db = Db::open(db_path).context("open db for label step")?;
+    let bars = db
+        .recent_bars_10s(instrument, 1000)
+        .with_context(|| format!("load bars for {instrument}"))?;
+    if bars.is_empty() {
+        anyhow::bail!("no bars in DB for {instrument}");
+    }
+    let bars_typed: Vec<market_domain::Bar10s> = bars
+        .into_iter()
+        .map(|b| market_domain::Bar10s {
+            instrument_id: 0,
+            ts_ms: b.ts_ms,
+            open: b.open,
+            high: b.high,
+            low: b.low,
+            close: b.close,
+            n_ticks: b.n_ticks,
+            spread_bp_avg: b.spread_bp_avg,
+        })
+        .collect();
+    let cfg = labeling::LabelPipelineConfig::default();
+    let out = labeling::run_label_pipeline(&bars_typed, &cfg);
+    let run_id = format!(
+        "run_{}_{}",
+        chrono::Utc::now().timestamp(),
+        uuid::Uuid::new_v4().simple().to_string()[..6].to_string()
+    );
+    let n_persisted = db
+        .insert_labels(instrument, &run_id, &out.labels)
+        .context("persist labels")?;
+    tracing::info!(
+        n_bars = out.n_bars,
+        n_events = out.n_events,
+        n_chosen = out.labels.len(),
+        n_persisted,
+        run_id = %run_id,
+        "labelling complete"
+    );
+    Ok(run_id)
 }
 
 /// Read the most recent `label_run_id` for `instrument` from the
 /// `labels` table. Used to thread the id from the label step to the
 /// train step without parsing python stdout.
+#[allow(dead_code)]
 fn read_latest_label_run_id(db_path: &Path, instrument: &str) -> Result<Option<String>> {
     let db = Db::open(db_path).context("open db for label_run_id lookup")?;
     let id: Option<String> = db.with_conn(|conn| -> duckdb::Result<Option<String>> {

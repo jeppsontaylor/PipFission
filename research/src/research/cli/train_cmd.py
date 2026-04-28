@@ -10,7 +10,6 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
-from research.observability import track_run
 from research.training.side_train import SideTrainConfig, train_side
 
 app = typer.Typer(no_args_is_help=True)
@@ -54,8 +53,7 @@ def side(
         "seed": seed,
         "candidates": candidates,
     }
-    with track_run("train.side", args, instrument=instrument):
-        _run(instrument, n_bars, n_splits, n_test_groups, embargo_pct, n_optuna_trials, label_run_id, seed, candidates, json_out)
+    _run(instrument, n_bars, n_splits, n_test_groups, embargo_pct, n_optuna_trials, label_run_id, seed, candidates, json_out)
 
 
 def _run(
