@@ -88,3 +88,4 @@
 {"action":"skip","instrument":"GBP_USD","model_id":"side_lgbm_1777266562_dba25f","params_id":"params_side_lgbm_1777266562_dba25f_987d870f","price":1.350415,"realized_r":null,"reason":"below_threshold","ts_ms":1777358900000,"v":"v1.0.1"}
 {"action":"skip","instrument":"GBP_USD","model_id":"side_lgbm_1777266562_dba25f","params_id":"params_side_lgbm_1777266562_dba25f_987d870f","price":1.350465,"realized_r":null,"reason":"below_threshold","ts_ms":1777358910000,"v":"v1.0.1"}
 {"action":"skip","instrument":"GBP_USD","model_id":"side_lgbm_1777266562_dba25f","params_id":"params_side_lgbm_1777266562_dba25f_987d870f","price":1.350485,"realized_r":null,"reason":"below_threshold","ts_ms":1777358920000,"v":"v1.0.1"}
+{"action":"skip","instrument":"GBP_USD","model_id":"side_lgbm_1777266562_dba25f","params_id":"params_side_lgbm_1777266562_dba25f_987d870f","price":1.3503699999999998,"realized_r":null,"reason":"below_threshold","ts_ms":1777358950000,"v":"v1.0.1"}

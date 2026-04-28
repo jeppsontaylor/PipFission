@@ -86,3 +86,4 @@
 {"action":"skip","instrument":"USD_CHF","model_id":"side_lgbm_1777266562_dba25f","params_id":"params_side_lgbm_1777266562_dba25f_987d870f","price":0.788735,"realized_r":null,"reason":"below_threshold","ts_ms":1777358900000,"v":"v1.0.1"}
 {"action":"skip","instrument":"USD_CHF","model_id":"side_lgbm_1777266562_dba25f","params_id":"params_side_lgbm_1777266562_dba25f_987d870f","price":0.7887,"realized_r":null,"reason":"below_threshold","ts_ms":1777358910000,"v":"v1.0.1"}
 {"action":"skip","instrument":"USD_CHF","model_id":"side_lgbm_1777266562_dba25f","params_id":"params_side_lgbm_1777266562_dba25f_987d870f","price":0.78871,"realized_r":null,"reason":"below_threshold","ts_ms":1777358920000,"v":"v1.0.1"}
+{"action":"skip","instrument":"USD_CHF","model_id":"side_lgbm_1777266562_dba25f","params_id":"params_side_lgbm_1777266562_dba25f_987d870f","price":0.7887850000000001,"realized_r":null,"reason":"below_threshold","ts_ms":1777358950000,"v":"v1.0.1"}
