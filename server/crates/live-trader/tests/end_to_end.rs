@@ -99,6 +99,33 @@ fn make_signal(instrument: &str, ts_ms: i64, p_long: f64) -> ChampionSignal {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn live_trader_emits_decisions_and_records_trades() {
+    // Redirect file-side effects (forensic snapshots + JSONL previews)
+    // to per-test tempdirs so the integration test never writes into
+    // the repo's `data/trades/` or `trade_logs/` trees. SAFETY: setting
+    // env vars in tests is process-global, but `cargo test` runs each
+    // integration test binary in its own process, so this is contained.
+    let snap_root = std::env::temp_dir().join(format!(
+        "live_trader_test_snaps_{}_{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0)
+    ));
+    let logs_root = std::env::temp_dir().join(format!(
+        "live_trader_test_logs_{}_{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0)
+    ));
+    // SAFETY: single-threaded test setup before spawning the runner.
+    unsafe {
+        std::env::set_var("LIVE_TRADER_SNAPSHOT_DIR", &snap_root);
+        std::env::set_var("TRADE_LOGS_DIR", &logs_root);
+    }
+
     let path = tmp_db_path("e2e");
     let _ = std::fs::remove_file(&path);
     let db = Db::open(&path).expect("open db");
@@ -171,4 +198,6 @@ async fn live_trader_emits_decisions_and_records_trades() {
     );
 
     let _ = std::fs::remove_file(&path);
+    let _ = std::fs::remove_dir_all(&snap_root);
+    let _ = std::fs::remove_dir_all(&logs_root);
 }
