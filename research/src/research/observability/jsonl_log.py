@@ -20,7 +20,11 @@ from typing import Any
 
 MAX_LINES: int = 2000
 DEFAULT_ROOT_ENV = "TRADE_LOGS_DIR"
-DEFAULT_ROOT = Path("./trade_logs")
+# Resolved to the repo root, not CWD — pipeline subprocesses launched
+# from `research/` would otherwise pollute `research/trade_logs/`.
+_HERE = Path(__file__).resolve()
+_REPO_ROOT = _HERE.parents[4]  # observability → research → src → research → repo
+DEFAULT_ROOT = _REPO_ROOT / "trade_logs"
 
 
 def repo_version() -> str:

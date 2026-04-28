@@ -52,3 +52,6 @@ collector.pid
 
 # ==== Claude / agent scratch ====
 .claude/
+
+# CWD-pollution guard: pipeline runs from research/ create this
+research/trade_logs/

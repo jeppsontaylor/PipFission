@@ -758,3 +758,4 @@
 {"action":"skip","instrument":"ETH/USD","model_id":"side_lgbm_1777401438_5e7a5e","params_id":"params_side_lgbm_1777401438_5e7a5e_860a5419","price":2289.4790000000003,"realized_r":null,"reason":"spread_too_wide","ts_ms":1777401930000,"v":"v1.0.1"}
 {"action":"skip","instrument":"ETH/USD","model_id":"side_lgbm_1777401438_5e7a5e","params_id":"params_side_lgbm_1777401438_5e7a5e_860a5419","price":2289.1099999999997,"realized_r":null,"reason":"spread_too_wide","ts_ms":1777401960000,"v":"v1.0.1"}
 {"action":"skip","instrument":"ETH/USD","model_id":"side_lgbm_1777401438_5e7a5e","params_id":"params_side_lgbm_1777401438_5e7a5e_860a5419","price":2290.21,"realized_r":null,"reason":"spread_too_wide","ts_ms":1777401980000,"v":"v1.0.1"}
+{"action":"skip","instrument":"ETH/USD","model_id":"side_lgbm_1777401438_5e7a5e","params_id":"params_side_lgbm_1777401438_5e7a5e_860a5419","price":2289.2255,"realized_r":null,"reason":"spread_too_wide","ts_ms":1777402040000,"v":"v1.0.1"}
