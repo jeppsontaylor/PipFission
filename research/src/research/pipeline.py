@@ -58,7 +58,12 @@ class PipelineConfig:
     # Label optimiser
     n_bars: int = 1000
     sigma_span: int = 60
-    cusum_h_mult: float = 2.0
+    # 1.0 — empirically on 1000 EUR_USD bars: mult=2.0 → 135 events
+    # → 98 chosen labels (below 6-fold CPCV minimum of ~120). Lowering
+    # to 1.0 gives 265 events → ~125 labels which is enough headroom
+    # for the trainer to learn something. Tighten back up once the DB
+    # has more bars to draw from.
+    cusum_h_mult: float = 1.0
     pt_atr: float = 2.0
     sl_atr: float = 2.0
     vert_horizon: int = 36

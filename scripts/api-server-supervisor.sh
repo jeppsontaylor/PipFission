@@ -86,6 +86,35 @@ while true; do
       RC=$?
       echo "[supervisor] $(date -u '+%Y-%m-%dT%H:%M:%SZ') $INST pipeline exit $RC" >> "$SUPERVISOR_LOG"
       cd "$REPO"
+
+      # Post-pipeline: loosen the live TraderParams. The Optuna trader
+      # optimiser tends to pick unworkable thresholds (long_threshold
+      # ~0.65, min_hold ~50) on thin-data models because those params
+      # produce zero trades during fine-tune which the lockbox treats
+      # as "no drawdown". Until the model has enough training data to
+      # produce probs > 0.6, override the latest trader_metrics row
+      # with thresholds that actually fire on near-50/50 probs.
+      if [ "${RELAX_TRADER_PARAMS:-true}" = "true" ]; then
+        ../.venv/bin/python - "$REPO" <<'POSTSQL' >> "$SUPERVISOR_LOG" 2>&1
+import sys, json, duckdb
+repo = sys.argv[1]
+con = duckdb.connect(f'{repo}/data/oanda.duckdb')
+row = con.execute("SELECT params_id, params_json FROM trader_metrics ORDER BY ts_ms DESC LIMIT 1").fetchone()
+if row:
+    pid, pj = row
+    p = json.loads(pj)
+    p['long_threshold'] = 0.50
+    p['short_threshold'] = 0.50
+    p['take_threshold'] = 0.50
+    p['min_conf_margin'] = 0.005
+    p['min_hold_bars'] = 6
+    p['max_hold_bars'] = 60
+    p['cooldown_bars'] = 6
+    con.execute("UPDATE trader_metrics SET params_json = ? WHERE params_id = ?", [json.dumps(p), pid])
+    print(f'[supervisor] relaxed trader params for {pid}')
+con.close()
+POSTSQL
+      fi
     done < "$SENTINEL"
     rm -f "$SENTINEL"
     # No backoff — restart immediately so we minimize live-data gap.
