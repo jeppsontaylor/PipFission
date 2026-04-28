@@ -137,11 +137,23 @@ fn on_bar(
 }
 
 /// Top-level dir used for `trade_logs/<v>/<ticker>/features.jsonl`.
-/// Matches `live-trader`'s convention.
+/// Anchored at the workspace root via `CARGO_MANIFEST_DIR` so cargo
+/// tests / running from any subdir doesn't pollute
+/// `server/crates/<crate>/trade_logs/`. The path resolves to:
+///   `$CARGO_MANIFEST_DIR/../../../trade_logs`
+/// (live-inference → server/crates/live-inference → server/crates → server → repo).
 fn trade_logs_root() -> std::path::PathBuf {
-    std::env::var("TRADE_LOGS_DIR")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|_| std::path::PathBuf::from("./trade_logs"))
+    if let Ok(dir) = std::env::var("TRADE_LOGS_DIR") {
+        return std::path::PathBuf::from(dir);
+    }
+    // Anchor at the workspace root regardless of cwd.
+    let crate_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    crate_dir
+        .parent() // server/crates
+        .and_then(|p| p.parent()) // server
+        .and_then(|p| p.parent()) // repo root
+        .map(|repo| repo.join("trade_logs"))
+        .unwrap_or_else(|| std::path::PathBuf::from("./trade_logs"))
 }
 
 const RELEASE_VERSION: &str = env!("CARGO_PKG_VERSION");

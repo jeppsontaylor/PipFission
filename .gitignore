@@ -55,3 +55,6 @@ collector.pid
 
 # CWD-pollution guard: pipeline runs from research/ create this
 research/trade_logs/
+
+# Defence-in-depth: any crate-relative trade_logs path
+server/crates/*/trade_logs/

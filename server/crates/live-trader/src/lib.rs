@@ -531,12 +531,21 @@ fn emit_decision(
 }
 
 /// Top-level dir into which `trade_logs/<v>/<ticker>/...jsonl` previews
-/// are written. Defaults to `./trade_logs` (the repo-checked-in folder).
-/// Tests + ops can override with `TRADE_LOGS_DIR`.
+/// are written. Anchored at the workspace root via
+/// `CARGO_MANIFEST_DIR` so cargo tests / running from any subdir
+/// doesn't pollute `server/crates/<crate>/trade_logs/`. Tests + ops
+/// can still override with `TRADE_LOGS_DIR`.
 fn trade_logs_root() -> PathBuf {
-    std::env::var("TRADE_LOGS_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from("./trade_logs"))
+    if let Ok(dir) = std::env::var("TRADE_LOGS_DIR") {
+        return PathBuf::from(dir);
+    }
+    let crate_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    crate_dir
+        .parent() // server/crates
+        .and_then(|p| p.parent()) // server
+        .and_then(|p| p.parent()) // repo root
+        .map(|repo| repo.join("trade_logs"))
+        .unwrap_or_else(|| PathBuf::from("./trade_logs"))
 }
 
 /// Cargo workspace version baked at compile time — the folder under
