@@ -12,9 +12,9 @@
   "hit_rate": 0.5454545454545454,
   "instrument": "USD_JPY",
   "latest_action": "(none)",
-  "latest_close": 159.591,
-  "latest_p_long": 0.4939587414264679,
-  "latest_p_short": 0.5060412585735321,
+  "latest_close": 159.5545,
+  "latest_p_long": 0.4948161542415619,
+  "latest_p_short": 0.5051838457584381,
   "latest_trade_ts_ms": 1777403630000,
   "losses": 10,
   "max_drawdown_bp": 0.17701449464770563,
@@ -22,7 +22,7 @@
   "profit_factor": 2.0603550978559504,
   "sharpe_per_trade": 0.282565077774599,
   "sortino_per_trade": 0.5966981374949701,
-  "summary_updated_ms": 1777419926717,
+  "summary_updated_ms": 1777421230091,
   "v": "v1.0.1",
   "wins": 12
 }

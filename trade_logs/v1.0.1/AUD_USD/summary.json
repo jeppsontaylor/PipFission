@@ -12,9 +12,9 @@
   "hit_rate": 0.45,
   "instrument": "AUD_USD",
   "latest_action": "(none)",
-  "latest_close": 0.71836,
-  "latest_p_long": 0.5303313136100769,
-  "latest_p_short": 0.4696686863899231,
+  "latest_close": 0.718835,
+  "latest_p_long": 0.49281299114227295,
+  "latest_p_short": 0.507187008857727,
   "latest_trade_ts_ms": 1777403550000,
   "losses": 11,
   "max_drawdown_bp": 1.214858261086327,
@@ -22,7 +22,7 @@
   "profit_factor": 0.8653697712444997,
   "sharpe_per_trade": -0.06321698686990027,
   "sortino_per_trade": -0.09090207714955573,
-  "summary_updated_ms": 1777419926745,
+  "summary_updated_ms": 1777421230122,
   "v": "v1.0.1",
   "wins": 9
 }
