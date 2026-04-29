@@ -12,9 +12,9 @@
   "hit_rate": 0.4090909090909091,
   "instrument": "GBP_USD",
   "latest_action": "(none)",
-  "latest_close": 1.35217,
-  "latest_p_long": 0.5392438769340515,
-  "latest_p_short": 0.4607561230659485,
+  "latest_close": 1.352125,
+  "latest_p_long": 0.5429356694221497,
+  "latest_p_short": 0.45706433057785034,
   "latest_trade_ts_ms": 1777403630000,
   "losses": 13,
   "max_drawdown_bp": 0.3604325256664463,
@@ -22,7 +22,7 @@
   "profit_factor": 1.1806840685412634,
   "sharpe_per_trade": 0.0629432462709704,
   "sortino_per_trade": 0.10399738572403369,
-  "summary_updated_ms": 1777417108207,
+  "summary_updated_ms": 1777419926737,
   "v": "v1.0.1",
   "wins": 9
 }

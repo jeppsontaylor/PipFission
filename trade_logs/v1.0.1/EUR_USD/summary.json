@@ -12,9 +12,9 @@
   "hit_rate": 0.5,
   "instrument": "EUR_USD",
   "latest_action": "(none)",
-  "latest_close": 1.171565,
-  "latest_p_long": 0.5392438769340515,
-  "latest_p_short": 0.4607561230659485,
+  "latest_close": 1.17156,
+  "latest_p_long": 0.5338661670684814,
+  "latest_p_short": 0.46613383293151855,
   "latest_trade_ts_ms": 1777403600000,
   "losses": 11,
   "max_drawdown_bp": 0.2776163674748103,
@@ -22,7 +22,7 @@
   "profit_factor": 17.75245563965546,
   "sharpe_per_trade": 0.23024556397158338,
   "sortino_per_trade": 9.87333013019194,
-  "summary_updated_ms": 1777417108222,
+  "summary_updated_ms": 1777419926754,
   "v": "v1.0.1",
   "wins": 11
 }

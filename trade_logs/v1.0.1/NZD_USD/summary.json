@@ -12,9 +12,9 @@
   "hit_rate": 0.46153846153846156,
   "instrument": "NZD_USD",
   "latest_action": "(none)",
-  "latest_close": 0.58855,
-  "latest_p_long": 0.4838370084762573,
-  "latest_p_short": 0.5161629915237427,
+  "latest_close": 0.588665,
+  "latest_p_long": 0.5386807918548584,
+  "latest_p_short": 0.4613192081451416,
   "latest_trade_ts_ms": 1777403550000,
   "losses": 7,
   "max_drawdown_bp": 0.7226062924073884,
@@ -22,7 +22,7 @@
   "profit_factor": 1.2269218510973536,
   "sharpe_per_trade": 0.08357223931250565,
   "sortino_per_trade": 0.1469928657331361,
-  "summary_updated_ms": 1777417108230,
+  "summary_updated_ms": 1777419926762,
   "v": "v1.0.1",
   "wins": 6
 }

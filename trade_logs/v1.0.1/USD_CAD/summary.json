@@ -12,9 +12,9 @@
   "hit_rate": 0.3333333333333333,
   "instrument": "USD_CAD",
   "latest_action": "(none)",
-  "latest_close": 1.368155,
-  "latest_p_long": 0.4936691224575043,
-  "latest_p_short": 0.5063308775424957,
+  "latest_close": 1.36828,
+  "latest_p_long": 0.5464525818824768,
+  "latest_p_short": 0.4535474181175232,
   "latest_trade_ts_ms": 1777403650000,
   "losses": 14,
   "max_drawdown_bp": 0.723268064134349,
@@ -22,7 +22,7 @@
   "profit_factor": 0.9949747966135948,
   "sharpe_per_trade": -0.002017264152857618,
   "sortino_per_trade": -0.0034386991397720545,
-  "summary_updated_ms": 1777417108201,
+  "summary_updated_ms": 1777419926729,
   "v": "v1.0.1",
   "wins": 7
 }
